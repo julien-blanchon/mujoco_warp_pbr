@@ -91,6 +91,7 @@ def create_render_context(
   denoise: bool = False,
   denoise_iterations: int = 3,
   render_hdr: bool = False,
+  traversal: str = "software",
 ) -> PbrRenderContext:
   """Creates a PBR render context on device.
 
@@ -155,6 +156,11 @@ def create_render_context(
       first-hit albedo, normal and depth (Tier.PATH only; off by default).
     denoise_iterations: Filter passes (footprint 4 · 2^(iterations - 1) + 1 pixels).
     render_hdr: Also write linear HDR radiance (before exposure and tone mapping) to `hdr_data`.
+    traversal: Ray traversal of the real-time tier. "software" (default) traverses MuJoCo Warp's
+      scene BVH in Warp. "optix" traces through OptiX acceleration structures, on RT cores where
+      the GPU has them (needs PyOptiX and the OptiX SDK headers, see `_src/optix`); it falls back
+      to "software" with a warning when unavailable or when the scene has flex, height fields or
+      SDF geoms. Depth, segmentation and images match the software traversal up to rounding.
 
   Returns:
     The PBR render context.
@@ -168,6 +174,15 @@ def create_render_context(
     raise ValueError("samples_per_pixel must be at least 1")
   if shadow_samples < 1:
     raise ValueError("shadow_samples must be at least 1")
+  if traversal not in ("software", "optix"):
+    raise ValueError(f'traversal must be "software" or "optix", got {traversal!r}')
+  if traversal == "optix":
+    from mujoco_warp_pbr._src import optix as optix_backend
+
+    reason = optix_backend.unavailable_reason(mjm, enabled_geom_groups, tier)
+    if reason is not None:
+      warnings.warn(f'traversal="optix" falls back to "software": {reason}', stacklevel=2)
+      traversal = "software"
   base = mjw.create_render_context(
     mjm,
     nworld=nworld,
@@ -366,4 +381,5 @@ def create_render_context(
     denoise_buffers=tuple(wp.zeros((nworld, ri if denoise else 1), dtype=wp.vec4) for _ in range(2)),
     render_hdr=render_hdr,
     hdr_data=wp.zeros((nworld, ri if render_hdr or denoise else 1), dtype=wp.vec3),
+    traversal=traversal,
   )

@@ -61,16 +61,20 @@ _RAY_OFFSET = 1.0e-4
 _MIN_THROUGHPUT = 1.0 / 255.0
 
 
-def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
-  """Specialises the megakernel on the scene and context configuration."""
+def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: wp.Function, trace_any: wp.Function) -> wp.Function:
+  """Specialises the per-pixel body of the megakernel on the scene and context configuration.
+
+  Returns render_pixel(geo, mats, lit, cams, env, seed, out, worldid, rayid), which renders ray
+  `rayid` (pixel of an active camera) of world `worldid`. The ray queries are the given
+  `trace_closest` / `trace_any` (`trace.make_trace` signatures), so the same body runs as a Warp
+  kernel over the software traversal or as an OptiX ray-generation program.
+  """
   base = rc.base
   geom_types = base.geom_ray_types
-  trace_closest, trace_any = trace.make_trace(geom_types, base.enable_backface_culling, rc.ordered_traversal)
   eval_light = lights.make_eval_light(rc.light_model, base.has_spot_lights)
   eval_surface = material.make_eval_surface(geom_types, rc.features, base.enable_vertex_normals)
   display_transform = make_display_transform(rc.tone_mapper)
   thread_pixel = kernel_inputs.make_thread_pixel(rc.render_order)
-  world_order = rc.render_order == RenderOrder.WORLD
 
   nlight = m.nlight
   use_shadows = rc.use_shadows
@@ -404,16 +408,8 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
         break
     return radiance, first
 
-  kernel_options = {"cuda_max_registers": rc.max_registers} if rc.max_registers else {}
-
-  @wp.kernel(
-    module="unique",
-    enable_backward=False,
-    grid_stride=False,
-    module_options=kernel_inputs.module_options(rc),
-    **kernel_options,
-  )
-  def render_megakernel(
+  @wp.func
+  def render_pixel(
     geo: Geometry,
     mats: Materials,
     lit: lights.Lights,
@@ -421,12 +417,9 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     env: Environment,
     seed: int,
     out: Outputs,
+    worldid: int,
+    rayid: int,
   ):
-    if wp.static(world_order):
-      rayid, worldid = wp.tid()
-    else:
-      worldid, rayid = wp.tid()
-
     # Global ray id -> (active camera, pixel) using cumulative image sizes.
     camid = int(-1)
     pixelid = int(-1)
@@ -525,6 +518,39 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       srgb_oetf(c[0]) * 255.0 + 0.5, srgb_oetf(c[1]) * 255.0 + 0.5, srgb_oetf(c[2]) * 255.0 + 0.5, 255.0
     )
 
+  return render_pixel
+
+
+def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
+  """Specialises the megakernel on the scene and context configuration."""
+  base = rc.base
+  trace_closest, trace_any = trace.make_trace(base.geom_ray_types, base.enable_backface_culling, rc.ordered_traversal)
+  render_pixel = make_render_pixel(m, rc, trace_closest, trace_any)
+  world_order = rc.render_order == RenderOrder.WORLD
+  kernel_options = {"cuda_max_registers": rc.max_registers} if rc.max_registers else {}
+
+  @wp.kernel(
+    module="unique",
+    enable_backward=False,
+    grid_stride=False,
+    module_options=kernel_inputs.module_options(rc),
+    **kernel_options,
+  )
+  def render_megakernel(
+    geo: Geometry,
+    mats: Materials,
+    lit: lights.Lights,
+    cams: Cameras,
+    env: Environment,
+    seed: int,
+    out: Outputs,
+  ):
+    if wp.static(world_order):
+      rayid, worldid = wp.tid()
+    else:
+      worldid, rayid = wp.tid()
+    render_pixel(geo, mats, lit, cams, env, seed, out, worldid, rayid)
+
   return render_megakernel
 
 
@@ -532,7 +558,8 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
 def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
   """Renders the current frame into the context's output buffers.
 
-  Call `mujoco_warp.refit_bvh(m, d, rc.base)` first whenever geometry moved.
+  Call `mujoco_warp.refit_bvh(m, d, rc.base)` first whenever geometry moved (with
+  traversal="optix" the OptiX acceleration structures are updated here from `d` instead).
 
   Args:
     m: The model on device.
@@ -545,6 +572,11 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
     pathtrace.render(m, d, rc, seed)
     return
   rc.base.seg_data.fill_(wp.vec2i(-1, -1))
+  if rc.traversal == "optix":
+    from mujoco_warp_pbr._src.optix import launch as optix_launch
+
+    optix_launch.render(m, d, rc, seed)
+    return
   if rc._megakernel is None:
     rc._megakernel = _build_megakernel(m, rc)
 

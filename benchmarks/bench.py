@@ -220,6 +220,20 @@ def time_loop(step, iters: int, repeats: int) -> list[float]:
   return times
 
 
+def time_eager(step, iters: int, repeats: int) -> list[float]:
+  """GPU time per step without graph capture (launches enqueued back to back, synchronised)."""
+  step()
+  wp.synchronize()
+  times = []
+  for _ in range(repeats):
+    start = time.perf_counter()
+    for _ in range(iters):
+      step()
+    wp.synchronize()
+    times.append((time.perf_counter() - start) / iters)
+  return times
+
+
 def time_graph(step, iters: int, repeats: int) -> list[float]:
   step()  # compile and warm up outside the capture
   wp.synchronize()
@@ -297,8 +311,12 @@ def main():
     wp.synchronize()
     once = time.perf_counter() - start
     args.iters = int(max(1, min(args.iters, round(args.time_budget / max(once, 1e-6)))))
+  # OptiX launches cannot be captured in CUDA graphs: time them eagerly (launches stay async).
+  eager = args.renderer == "pbr" and rc.traversal == "optix"
   if sequential:
     times = time_loop(step, args.iters, args.repeats)
+  elif eager:
+    times = time_eager(step, args.iters, args.repeats)
   else:
     times = time_graph(step, args.iters, args.repeats)
   median = float(np.median(times))
@@ -316,6 +334,7 @@ def main():
     "options": args.set,
     "iters": args.iters,
     "sequential": sequential,
+    "timing": "sequential" if sequential else "eager" if eager else "graph",
     "ms_per_frame_batch": median * 1e3,
     "frames_per_s": frames / median,
     "gpx_per_s": frames * args.res * args.res / median / 1e9,
@@ -326,7 +345,7 @@ def main():
     "gpu_before": before,
     "device": wp.get_device().name,
   }
-  if args.renderer == "pbr":
+  if args.renderer == "pbr" and rc._megakernel is not None:  # None with traversal="optix"
     props = wp.get_cuda_kernel_properties(rc._megakernel, block_dim=m.block_dim.render)
     row["registers"] = props.get("register_count") if isinstance(props, dict) else getattr(props, "register_count", None)
     row["local_bytes"] = (

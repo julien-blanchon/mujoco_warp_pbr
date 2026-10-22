@@ -16,9 +16,9 @@
 """Ray queries used by the renderer.
 
 `Geometry` gathers every array a ray query reads. `make_trace` returns the closest-hit and
-any-hit funcs the megakernel calls. The current backend is MuJoCo Warp's scene BVH + per-geom
-intersection (`cast_ray`), specialised on the geom types present. Another backend (own
-acceleration structures, hardware ray tracing) only needs funcs with the same signatures.
+any-hit funcs the megakernel calls. The default backend is MuJoCo Warp's scene BVH + per-geom
+intersection (`cast_ray`), specialised on the geom types present. The hardware ray-tracing
+backend (`optix/trace.py`) provides funcs with the same signatures.
 """
 
 from typing import Tuple
@@ -88,6 +88,10 @@ class Geometry:
   flex_geom_edgeid: wp.array[int]
   flex_bvh_id: wp.array[wp.uint64]
   flex_group_root: wp.array2d[int]
+  # Hardware ray tracing (traversal="optix", see optix/): unused by the software traversal.
+  rt_handle: wp.uint64  # OptiX instance acceleration structure over all worlds
+  rt_frame: wp.array[wp.vec3]  # world cell: lower, upper, spacing, centre
+  rt_grid: wp.vec3i  # world cells per axis
 
 
 def geometry(m: Model, d: Data, base: RenderContext) -> Geometry:

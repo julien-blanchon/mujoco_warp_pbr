@@ -136,3 +136,86 @@ today. Hit masks agree on 99.995–100% of pixels.
 - The single-IAS cell clipping and precision issues above.
 - The experimental Warp API: process-global registration, not reload-safe.
 - Launch dimensions are limited to about 2^30 rays (unverified).
+
+## 6. Integrated backend (`traversal="optix"`)
+
+Date: 2026-10-22. Code: `mujoco_warp_pbr/_src/optix/`. Option:
+`create_render_context(..., traversal="optix")`. RTX PRO 6000 results:
+[`../../results/rt_backend.md`](../../results/rt_backend.md).
+
+**Design decisions:**
+- **One body, two entry points.** `render.make_render_pixel` holds the former megakernel body as a
+  `wp.func`. The software kernel calls it after `wp.tid()`. The OptiX raygen calls it after the
+  launch index, with the OptiX `trace_closest` / `trace_any` (`optix/trace.py`).
+  - The software path is otherwise unchanged and stays the default.
+  - Its RTX PRO 6000 timings are unchanged: 12.9–13.1 ms for damaged_helmet at 4096 × 64², and a
+    score of 426k.
+- **Modules.** Every build defines its raygen, miss, two closest-hit and one intersection program
+  per primitive type in a fresh, uniquely named Warp module (`mujoco_warp_pbr_optix_N`).
+  - The module is compiled to PTX with `wp.compile_aot_module`, which caches it by content hash.
+  - Entry names are read back from the PTX.
+  - If OptiX rejects the device's PTX target, the build retries with sm_89. Driver 580 / OptiX 9.0
+    needs this on sm_120. `MJPBR_OPTIX_PTX_ARCH` forces a target.
+- **Acceleration structures:**
+  - one triangle GAS per MuJoCo mesh, built from MuJoCo Warp's `wp.Mesh` points and indices;
+  - one IAS over all worlds' mesh instances;
+  - one identity instance of a single custom-primitive GAS, which holds every world's primitive
+    geoms as world-space AABBs. Its intersection programs run MuJoCo Warp's `ray_*` on the
+    translated world pose, so hits and normals match the software path.
+- **Planes** are not instanced: being infinite or larger than the scene, they would inflate the
+  world cells. `trace_closest` / `trace_any` intersect them analytically with `ray_plane` and
+  apply MuJoCo Warp's tie-break.
+- **World cells.**
+  - Each world is translated onto a cell of a centred 3D grid.
+  - Each cell is the union of all worlds' instance bounds. The bounds only grow, and are updated
+    on the device every frame with atomics, with no host synchronisation.
+  - Every ray, shadow rays included, is clipped to its cell, so a ray starting outside its cell
+    (e.g. the camera) begins at the cell entry.
+- **Per frame:** five small Warp kernels run: bounds, cell, primitive AABBs, mesh instances and
+  the parameter copy. They are followed by a refit of the GAS and the IAS (`optix_rebuild_every`
+  rebuilds instead) and by `optixLaunch`.
+- **Hit reconstruction.**
+  - Mesh hits carry the instance id (world · ngeom + geom), the primitive index (face) and
+    barycentrics.
+  - The raygen remaps the barycentrics, since OptiX's (b1, b2) weight vertices 1 and 2 and MuJoCo
+    Warp's (u, v) weight vertices 0 and 1: u = 1 − b1 − b2 and v = b1.
+  - The normal is `geom_xmat @ mesh_eval_face_normal`.
+  - Custom primitives pass a world normal and the geom code as attributes.
+- **Culling and transparency.**
+  - Closest rays use `CULL_BACK_FACING_TRIANGLES`; MuJoCo Warp's winding agrees.
+  - Primitive intersection programs apply MuJoCo Warp's exit-face cull.
+  - Shadow rays use terminate-on-first-hit with closest-hit disabled, and do not cull triangles,
+    as MuJoCo Warp's any-hit.
+  - Geoms with alpha 0 get visibility mask 0 (meshes) or a point AABB plus a visibility flag
+    (primitives).
+- **Launch parameters.** A Warp kernel stores the `Params` struct (all render structs) into the
+  device buffer that `optixLaunch` reads. Sub-structs are re-assigned only when their bytes
+  change, since Warp deep-copies on struct assignment. This brought the host cost from 0.7 ms to
+  0.3 ms per frame.
+- **Supersampling.** For spp > 1 the program renders the n × n samples as an n×-resolution
+  1-spp image, writing linear HDR. A Warp kernel then tone maps each sample, averages and encodes,
+  as the megakernel's sample loop does.
+  - Trace calls inside the sample loop made OptiX spill most of the program state across each
+    trace: 4.6 KB of continuation spills, 17× slower.
+  - The ray-cone footprint now comes from the sub-pixel neighbour, which changes texture LOD
+    marginally (≤ 1 level of 8-bit RGB difference).
+- **Register cap.** 64 registers per thread (`optix_max_registers`) is fastest; OptiX's default is
+  up to 20% slower.
+
+**Not supported or different:**
+- **CUDA graphs.** Stream capture records the parameter memcpy of `optixLaunch` but not its
+  kernel, on OptiX 9.0 (RTX) and 9.1 (GH200), whether captured through Warp or through
+  `cuStreamBeginCapture` in any mode. `render` therefore raises inside a capture, and bench.py
+  times OptiX eagerly.
+- **Fallback to software** (with a warning) for flex, height fields, SDF geoms, the path-traced
+  tier, a missing PyOptiX or missing OptiX headers.
+- **Exact ties** between overlapping surfaces may resolve differently from the software path
+  (higher geom index wins there).
+- **Primitive-only scenes** gain nothing: the analytic intersection programs run on the SMs and
+  OptiX's per-call overhead dominates. Spheres break even; capsules are about 1.8× slower.
+  - The first version used one IAS instance per primitive over a shared unit-cube GAS, scaled to
+    the geom's local box. It was faster on the primitives scene: 4.85 vs 5.80 ms, both at OptiX's
+    default register count. It was equal on material_grid at the 64-register cap.
+  - It was never measured on mixed scenes, so it is the first candidate for a follow-up.
+  - MuJoCo Warp's BVH inside the program was dropped. Warp's `bvh_query` uses a shared-memory
+    stack, which OptiX rejects, and the ordered traversal there was 1.3–2.6× slower.

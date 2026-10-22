@@ -1,0 +1,286 @@
+# Copyright 2026 The mujoco_warp_pbr Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""Ray queries through OptiX: the `trace_closest` / `trace_any` pair of `trace.make_trace`.
+
+All worlds share one instance acceleration structure (IAS). Worlds are separated in space: world
+`w` is translated by `world_offset(w)` onto a cell of a centred 3D grid, and every ray is clipped
+to its world's cell, so it can only reach its own world's instances. The cell is the union of the
+instance bounds over all worlds (grown as geometry moves, see `accel.py`).
+
+Planes are infinite or larger than the rest of the scene, so they are not instanced: they are
+intersected analytically here with MuJoCo Warp's `ray_plane`, before or after the OptiX trace.
+Hit distances are in the units of the (unit) ray direction, as in the software traversal.
+"""
+
+from typing import Tuple
+
+import warp as wp
+from mujoco_warp._src.ray import RAY_TOL_REL
+from mujoco_warp._src.ray import ray_box
+from mujoco_warp._src.ray import ray_capsule
+from mujoco_warp._src.ray import ray_cylinder
+from mujoco_warp._src.ray import ray_ellipsoid
+from mujoco_warp._src.ray import ray_plane
+from mujoco_warp._src.ray import ray_sphere
+from mujoco_warp._src.render import _geom_rgba
+from mujoco_warp._src.types import GeomType
+
+from mujoco_warp_pbr._src.optix import device  # noqa: F401 (registers the mjpbr_optix_* builtins)
+from mujoco_warp_pbr._src.trace import Geometry
+from mujoco_warp_pbr._src.trace import Hit
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+# Entries of Geometry.rt_frame.
+FRAME_LOWER = 0  # cell lower corner, MuJoCo coordinates
+FRAME_UPPER = 1  # cell upper corner
+FRAME_SPACING = 2  # distance between neighbouring cell centres
+FRAME_CENTER = 3  # cell centre
+FRAME_SIZE = 4
+
+# Geom types intersected by custom-primitive programs.
+PRIMITIVE_TYPES = (
+  int(GeomType.SPHERE),
+  int(GeomType.CAPSULE),
+  int(GeomType.ELLIPSOID),
+  int(GeomType.CYLINDER),
+  int(GeomType.BOX),
+)
+# Relative padding of the custom-primitive bounds (avoids losing grazing hits to rounding).
+_BOUND_PAD = 1.0e-4
+
+
+@wp.func
+def primitive_extent(gtype: int, size: wp.vec3) -> wp.vec3:
+  """Half extents of a primitive geom's local bounding box."""
+  e = size
+  if gtype == int(GeomType.SPHERE):
+    e = wp.vec3(size[0], size[0], size[0])
+  elif gtype == int(GeomType.CAPSULE):
+    e = wp.vec3(size[0], size[0], size[0] + size[1])
+  elif gtype == int(GeomType.CYLINDER):
+    e = wp.vec3(size[0], size[0], size[1])
+  return wp.max(e * wp.static(1.0 + _BOUND_PAD), wp.vec3(1.0e-6))
+
+
+@wp.func
+def primitive_world_half_extent(gtype: int, size: wp.vec3, mat: wp.mat33) -> wp.vec3:
+  """Half extents of the tight world-aligned box of a rotated primitive geom."""
+  half = wp.vec3(0.0)
+  for i in range(3):
+    axis = mat[i, 2]  # world component i of the geom's z axis
+    if gtype == int(GeomType.SPHERE):
+      half[i] = size[0]
+    elif gtype == int(GeomType.CAPSULE):
+      half[i] = wp.abs(axis) * size[1] + size[0]
+    elif gtype == int(GeomType.CYLINDER):
+      half[i] = wp.abs(axis) * size[1] + size[0] * wp.sqrt(wp.max(1.0 - axis * axis, 0.0))
+    elif gtype == int(GeomType.ELLIPSOID):
+      a = mat[i, 0] * size[0]
+      b = mat[i, 1] * size[1]
+      c = mat[i, 2] * size[2]
+      half[i] = wp.sqrt(a * a + b * b + c * c)
+    else:
+      half[i] = wp.abs(mat[i, 0]) * size[0] + wp.abs(mat[i, 1]) * size[1] + wp.abs(mat[i, 2]) * size[2]
+  return half * wp.static(1.0 + _BOUND_PAD) + wp.vec3(1.0e-6)
+
+
+@wp.func
+def world_offset(frame: wp.array[wp.vec3], grid: wp.vec3i, worldid: int) -> wp.vec3:
+  """Translation of world `worldid` in the shared IAS."""
+  ix = worldid % grid[0]
+  iy = (worldid // grid[0]) % grid[1]
+  iz = worldid // (grid[0] * grid[1])
+  cell = wp.vec3(
+    float(ix) - 0.5 * float(grid[0] - 1),
+    float(iy) - 0.5 * float(grid[1] - 1),
+    float(iz) - 0.5 * float(grid[2] - 1),
+  )
+  return wp.cw_mul(cell, frame[FRAME_SPACING]) - frame[FRAME_CENTER]
+
+
+@wp.func
+def clip_to_cell(frame: wp.array[wp.vec3], origin: wp.vec3, direction: wp.vec3, max_dist: float) -> wp.vec2:
+  """Parameter interval [t0, t1] of the ray inside the world's cell (empty if t0 > t1)."""
+  lower = frame[FRAME_LOWER]
+  upper = frame[FRAME_UPPER]
+  t0 = float(0.0)
+  t1 = max_dist
+  for k in range(3):
+    dk = direction[k]
+    if wp.abs(dk) < 1.0e-20:
+      if origin[k] < lower[k] or origin[k] > upper[k]:
+        t0 = 1.0
+        t1 = 0.0
+    else:
+      inv = 1.0 / dk
+      a = (lower[k] - origin[k]) * inv
+      b = (upper[k] - origin[k]) * inv
+      t0 = wp.max(t0, wp.min(a, b))
+      t1 = wp.min(t1, wp.max(a, b))
+  return wp.vec2(t0, t1)
+
+
+def _plane_vector(plane_ids: Tuple[int, ...]):
+  return wp.types.vector(length=max(len(plane_ids), 1), dtype=wp.int32)(*(plane_ids or (0,)))
+
+
+def make_trace(
+  plane_ids: Tuple[int, ...], has_mesh: bool, has_instances: bool, cull_backfaces: bool, closest_ray_flags: int
+) -> Tuple[wp.Function, wp.Function]:
+  """Returns (trace_closest, trace_any) with the signatures of `trace.make_trace`.
+
+  Args:
+    plane_ids: enabled plane geoms, intersected analytically.
+    has_mesh: whether any instance is a mesh (triangle GAS).
+    has_instances: whether the IAS holds any instance.
+    cull_backfaces: drop hits whose normal faces away from the ray (as MuJoCo Warp).
+    closest_ray_flags: OptiX ray flags of closest-hit rays (back-face culling of triangles).
+  """
+  nplane = len(plane_ids)
+  planes = _plane_vector(plane_ids)
+  flags = wp.uint32(closest_ray_flags)
+
+  @wp.func
+  def trace_closest(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> Hit:
+    hit = Hit()
+    hit.geom_id = -1
+    hit.dist = max_dist
+    hit.normal = wp.vec3(0.0)
+    hit.bary_u = 0.0
+    hit.bary_v = 0.0
+    hit.face_id = -1
+    hit.mesh_id = -1
+
+    if wp.static(has_instances):
+      span = clip_to_cell(geo.rt_frame, origin, direction, max_dist)
+      if span[0] <= span[1]:
+        offset = world_offset(geo.rt_frame, geo.rt_grid, worldid)
+        r = wp.mjpbr_optix_trace_closest(geo.rt_handle, origin + offset, direction, span[0], span[1], flags)
+        if r.instance >= 0:
+          gi = r.instance - worldid * geo.geom_type.shape[0]
+          # Custom primitives report a world-space normal; meshes the face normal of the mesh frame.
+          n = wp.vec3(r.a, r.b, r.c)
+          if wp.static(has_mesh):
+            if geo.geom_type[gi] == int(GeomType.MESH):
+              mesh_id = geo.geom_dataid[worldid % geo.geom_dataid.shape[0], gi]
+              hit.mesh_id = mesh_id
+              hit.face_id = r.primitive
+              # OptiX (b1, b2) weight vertices 1 and 2; MuJoCo Warp's (u, v) vertices 0 and 1.
+              hit.bary_u = 1.0 - r.a - r.b
+              hit.bary_v = r.a
+              n = geo.geom_xmat[worldid, gi] @ wp.mesh_eval_face_normal(geo.mesh_bvh_id[mesh_id], r.primitive)
+          hit.geom_id = gi
+          hit.dist = r.t
+          hit.normal = wp.normalize(n)
+
+    if wp.static(nplane > 0):
+      for k in range(wp.static(nplane)):
+        gi = planes[k]
+        rgba, _ = _geom_rgba(geo.geom_matid, geo.geom_rgba, geo.mat_rgba, worldid, gi)
+        if rgba[3] == 0.0:
+          continue
+        d, n = ray_plane(
+          geo.geom_xpos[worldid, gi],
+          geo.geom_xmat[worldid, gi],
+          geo.geom_size[worldid % geo.geom_size.shape[0], gi],
+          origin,
+          direction,
+        )
+        if wp.static(cull_backfaces):
+          if d >= 0.0 and wp.dot(direction, n) > 0.0:
+            d = -1.0
+        # Ties go to the higher geom index, like MuJoCo Warp.
+        tol = RAY_TOL_REL * wp.max(hit.dist, 1.0)
+        closer = (d < hit.dist - tol) or (wp.abs(d - hit.dist) <= tol and (hit.geom_id < 0 or gi > hit.geom_id))
+        if d >= 0.0 and closer:
+          hit.geom_id = gi
+          hit.dist = d
+          hit.normal = n
+          hit.bary_u = 0.0
+          hit.bary_v = 0.0
+          hit.face_id = -1
+          hit.mesh_id = -1
+    return hit
+
+  @wp.func
+  def trace_any(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> bool:
+    if wp.static(nplane > 0):
+      for k in range(wp.static(nplane)):
+        gi = planes[k]
+        rgba, _ = _geom_rgba(geo.geom_matid, geo.geom_rgba, geo.mat_rgba, worldid, gi)
+        if rgba[3] != 0.0:
+          d, n = ray_plane(
+            geo.geom_xpos[worldid, gi],
+            geo.geom_xmat[worldid, gi],
+            geo.geom_size[worldid % geo.geom_size.shape[0], gi],
+            origin,
+            direction,
+          )
+          if wp.static(cull_backfaces):
+            if d >= 0.0 and wp.dot(direction, n) > 0.0:
+              d = -1.0
+          if d >= 0.0 and d < max_dist:
+            return True
+    if wp.static(has_instances):
+      span = clip_to_cell(geo.rt_frame, origin, direction, max_dist)
+      if span[0] <= span[1]:
+        offset = world_offset(geo.rt_frame, geo.rt_grid, worldid)
+        return wp.mjpbr_optix_trace_any(geo.rt_handle, origin + offset, direction, span[0], span[1])
+    return False
+
+  return trace_closest, trace_any
+
+
+def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
+  """Intersection of the world ray with custom primitive `world · nprim + k` of the primitive GAS.
+
+  Runs MuJoCo Warp's `ray_*` function of geom `prim_geom[k]` on its world pose translated onto the
+  world's cell. Returns (distance, world normal, world · ngeom + geom); distance < 0 on a miss.
+  """
+
+  @wp.func
+  def intersect(geo: Geometry, prim_geom: wp.array[int], prim_visible: wp.array[wp.int32]) -> Tuple[float, wp.vec3, int]:
+    index = wp.mjpbr_optix_primitive_index()
+    d = float(-1.0)
+    n = wp.vec3(0.0)
+    nprim = prim_geom.shape[0]
+    worldid = index // nprim
+    gi = prim_geom[index - worldid * nprim]
+    if prim_visible[index] == 0:
+      return d, n, 0
+    pnt = wp.mjpbr_optix_world_ray_origin()
+    vec = wp.mjpbr_optix_world_ray_direction()
+    pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
+    mat = geo.geom_xmat[worldid, gi]
+    size = geo.geom_size[worldid % geo.geom_size.shape[0], gi]
+    if wp.static(gtype == int(GeomType.SPHERE)):
+      d, n = ray_sphere(pos, size[0] * size[0], pnt, vec)
+    elif wp.static(gtype == int(GeomType.CAPSULE)):
+      d, n = ray_capsule(pos, mat, size, pnt, vec)
+    elif wp.static(gtype == int(GeomType.ELLIPSOID)):
+      d, n = ray_ellipsoid(pos, mat, size, pnt, vec)
+    elif wp.static(gtype == int(GeomType.CYLINDER)):
+      d, n = ray_cylinder(pos, mat, size, pnt, vec)
+    else:
+      d, _all, n = ray_box(pos, mat, size, pnt, vec)
+    if wp.static(cull_backfaces):
+      # Backface cull: drop exit-face hits, as MuJoCo Warp.
+      if d >= 0.0 and wp.dot(vec, n) > 0.0:
+        d = -1.0
+    return d, n, worldid * geo.geom_type.shape[0] + gi
+
+  return intersect

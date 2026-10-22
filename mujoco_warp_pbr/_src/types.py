@@ -170,7 +170,14 @@ class PbrRenderContext:
     denoise_buffers: ping-pong filter buffers                          (nworld, npixel)
     render_hdr: whether linear HDR (pre-exposure, pre-tone-mapping) is written
     hdr_data: linear HDR radiance                                      (nworld, npixel)
+    traversal: ray traversal of the real-time tier: "software" (MuJoCo Warp's BVH in Warp) or
+      "optix" (hardware ray tracing through OptiX, see optix/)
+    optix_rebuild_every: rebuild the OptiX IAS every this many frames instead of refitting it
+      (0: refit only)
+    optix_max_registers: register cap of the OptiX programs (0: OptiX's default); 64 is the
+      fastest measured on Blackwell RTX (up to 20% faster than the default)
     _megakernel: cached specialised render kernel
+    _optix: cached OptiX acceleration structures and pipeline (traversal="optix")
     _denoise_finish: cached remodulation / display kernel
   """
 
@@ -237,5 +244,9 @@ class PbrRenderContext:
   denoise_buffers: tuple
   render_hdr: bool
   hdr_data: wp.array2d[wp.vec3]
+  traversal: str = "software"
+  optix_rebuild_every: int = 0
+  optix_max_registers: int = 64
   _megakernel: Any = None
+  _optix: Any = None
   _denoise_finish: Any = None
