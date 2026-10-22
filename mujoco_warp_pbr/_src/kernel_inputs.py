@@ -18,7 +18,9 @@
 import warp as wp
 from mujoco_warp import Data
 from mujoco_warp import Model
+from mujoco_warp._src.types import ObjType
 
+from mujoco_warp_pbr._src import trace
 from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import RenderOrder
 
@@ -73,6 +75,31 @@ class Outputs:
   depth: wp.array2d[float]
   seg: wp.array2d[wp.vec2i]
   hdr: wp.array2d[wp.vec3]
+
+
+@wp.func
+def write_geometry(
+  out: Outputs,
+  worldid: int,
+  camid: int,
+  pixelid: int,
+  hit: trace.Hit,
+  ray_dir_cam: wp.vec3,
+  want_depth: bool,
+  want_seg: bool,
+):
+  """Writes depth and segmentation of a camera ray's first hit, as MuJoCo Warp does."""
+  if want_seg and hit.geom_id != -1:
+    if hit.geom_id == -2:
+      out.seg[worldid, out.seg_adr[camid] + pixelid] = wp.vec2i(hit.mesh_id, int(ObjType.FLEX))
+    else:
+      out.seg[worldid, out.seg_adr[camid] + pixelid] = wp.vec2i(hit.geom_id, int(ObjType.GEOM))
+  if want_depth:
+    depth = float(0.0)
+    if hit.geom_id != -1:
+      # Planar depth: distance projected onto the optical axis (-z in camera frame).
+      depth = hit.dist * -ray_dir_cam[2]
+    out.depth[worldid, out.depth_adr[camid] + pixelid] = depth
 
 
 @wp.func

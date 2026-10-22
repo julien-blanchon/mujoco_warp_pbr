@@ -35,7 +35,6 @@ from mujoco_warp import Model
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import MJ_MAXVAL
-from mujoco_warp._src.types import ObjType
 
 from mujoco_warp_pbr._src import brdf
 from mujoco_warp_pbr._src import denoise
@@ -51,6 +50,7 @@ from mujoco_warp_pbr._src.color import srgb_oetf
 from mujoco_warp_pbr._src.kernel_inputs import Cameras
 from mujoco_warp_pbr._src.kernel_inputs import Environment
 from mujoco_warp_pbr._src.kernel_inputs import Outputs
+from mujoco_warp_pbr._src.kernel_inputs import write_geometry
 from mujoco_warp_pbr._src.material import Materials
 from mujoco_warp_pbr._src.trace import Geometry
 from mujoco_warp_pbr._src.types import PbrRenderContext
@@ -108,6 +108,8 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   zfar = base.zfar
   total_rays = base.total_rays
   render_hdr = rc.render_hdr
+  # Without any RGB camera the shading code is compiled out (depth / segmentation only).
+  any_rgb = bool(base.render_rgb.numpy().any())
   use_denoiser = rc.denoise
   has_env = rc.has_env
   env_background = rc.env_background
@@ -444,7 +446,9 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       offset += npix
     if camid == -1:
       return
-    want_rgb = out.render_rgb[camid]
+    want_rgb = bool(False)
+    if wp.static(any_rgb):
+      want_rgb = out.render_rgb[camid]
     want_depth = out.render_depth[camid]
     want_seg = out.render_seg[camid]
     if not want_rgb and not want_depth and not want_seg:
@@ -468,6 +472,27 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     spread = float(0.0)
     width = float(0.0)
     pixel_seed = seed + worldid * wp.static(total_rays) + rayid
+
+    if not want_rgb:
+      # Depth / segmentation only: the primary ray through the pixel centre, no shading.
+      sub = wp.static(_SUBPIXEL)
+      ray_dir_cam, ray_offset_cam = compute_ray(
+        projection,
+        fovy,
+        sensorsize,
+        intrinsic,
+        img_w * sub,
+        img_h * sub,
+        px * sub + sub // 2,
+        py * sub + sub // 2,
+        wp.static(znear),
+      )
+      max_dist = float(MJ_MAXVAL)
+      if wp.static(zfar > 0.0):
+        max_dist = wp.static(zfar) / wp.max(-ray_dir_cam[2], 1.0e-6)
+      hit = trace_closest(geo, worldid, cam_pos + cam_mat @ ray_offset_cam, cam_mat @ ray_dir_cam, max_dist)
+      write_geometry(out, worldid, camid, pixelid, hit, ray_dir_cam, want_depth, want_seg)
+      return
 
     hdr = wp.vec3(0.0)
     albedo_sum = wp.vec3(0.0)
@@ -516,22 +541,10 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
         pixel_seed,
         s,
       )
-      hit = first.hit
       if s == 0:
-        if want_seg and hit.geom_id != -1:
-          if hit.geom_id == -2:
-            out.seg[worldid, out.seg_adr[camid] + pixelid] = wp.vec2i(hit.mesh_id, int(ObjType.FLEX))
-          else:
-            out.seg[worldid, out.seg_adr[camid] + pixelid] = wp.vec2i(hit.geom_id, int(ObjType.GEOM))
-        if want_depth:
-          depth = float(0.0)
-          if hit.geom_id != -1:
-            depth = hit.dist * -ray_dir_cam[2]
-          out.depth[worldid, out.depth_adr[camid] + pixelid] = depth
-        if not want_rgb:
-          return
-        if hit.geom_id != -1:
-          first_depth = hit.dist * -ray_dir_cam[2]
+        write_geometry(out, worldid, camid, pixelid, first.hit, ray_dir_cam, want_depth, want_seg)
+        if first.hit.geom_id != -1:
+          first_depth = first.hit.dist * -ray_dir_cam[2]
       hdr += radiance
       albedo_sum += first.albedo
       normal_sum += first.normal

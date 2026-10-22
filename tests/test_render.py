@@ -146,7 +146,9 @@ def test_shadow_blocks_direct_light(scene):
   assert (lit - shadowed).max() > 0.5
 
 
-def test_depth_and_segmentation_match_mujoco_warp(scene):
+@pytest.mark.parametrize("tier", [mjpbr.Tier.REALTIME, mjpbr.Tier.PATH])
+@pytest.mark.parametrize("render_rgb", [True, False])
+def test_depth_and_segmentation_match_mujoco_warp(scene, tier, render_rgb):
   xml = """
     <mujoco>
       <worldbody>
@@ -159,7 +161,8 @@ def test_depth_and_segmentation_match_mujoco_warp(scene):
       </worldbody>
     </mujoco>
   """
-  s = scene(xml, cam_res=(48, 40), render_depth=True, render_seg=True).render()
+  s = scene(xml, cam_res=(48, 40), render_rgb=render_rgb, render_depth=True, render_seg=True, tier=tier, path_samples=2)
+  s.render()
   ref = mjw.create_render_context(s.mjm, nworld=1, cam_res=(48, 40), render_rgb=True, render_depth=True, render_seg=True)
   mjw.refit_bvh(s.m, s.d, ref)
   mjw.render(s.m, s.d, ref)

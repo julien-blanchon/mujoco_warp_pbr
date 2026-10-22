@@ -29,7 +29,6 @@ from mujoco_warp import Model
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import MJ_MAXVAL
-from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.warp_util import event_scope
 
 from mujoco_warp_pbr._src import brdf
@@ -46,6 +45,7 @@ from mujoco_warp_pbr._src.color import srgb_oetf
 from mujoco_warp_pbr._src.kernel_inputs import Cameras
 from mujoco_warp_pbr._src.kernel_inputs import Environment
 from mujoco_warp_pbr._src.kernel_inputs import Outputs
+from mujoco_warp_pbr._src.kernel_inputs import write_geometry
 from mujoco_warp_pbr._src.material import Materials
 from mujoco_warp_pbr._src.material import Surface
 from mujoco_warp_pbr._src.trace import Geometry
@@ -86,6 +86,8 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   znear = base.znear
   zfar = base.zfar
   render_hdr = rc.render_hdr
+  # Without any RGB camera the shading code is compiled out (depth / segmentation only).
+  any_rgb = bool(base.render_rgb.numpy().any())
   has_transparency = rc.has_transparency
   max_layers = rc.max_layers if has_transparency else 1
   samples_per_axis = rc.samples_per_pixel
@@ -439,7 +441,9 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     if camid == -1:
       return
 
-    want_rgb = out.render_rgb[camid]
+    want_rgb = bool(False)
+    if wp.static(any_rgb):
+      want_rgb = out.render_rgb[camid]
     want_depth = out.render_depth[camid]
     want_seg = out.render_seg[camid]
     if not want_rgb and not want_depth and not want_seg:
@@ -467,6 +471,16 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     inv_aa = wp.static(1.0 / float(samples_per_axis))
     spread = wp.length(d1 - d0) * inv_aa
     width = wp.length(o1 - o0) * inv_aa
+
+    if not want_rgb:
+      # Depth / segmentation only: the primary ray through the pixel centre, no shading.
+      ray_dir_cam, ray_offset_cam = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, px, py, wp.static(znear))
+      max_dist = float(MJ_MAXVAL)
+      if wp.static(zfar > 0.0):
+        max_dist = wp.static(zfar) / wp.max(-ray_dir_cam[2], 1.0e-6)
+      hit = trace_closest(geo, worldid, cam_pos + cam_mat @ ray_offset_cam, cam_mat @ ray_dir_cam, max_dist)
+      write_geometry(out, worldid, camid, pixelid, hit, ray_dir_cam, want_depth, want_seg)
+      return
 
     n_aa = int(wp.static(samples_per_axis))
     pixel_seed = seed + (worldid * wp.static(total_rays) + rayid) * (n_aa * n_aa * 64)
@@ -497,19 +511,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
 
       # Depth and segmentation come from the first sample, as in MuJoCo Warp.
       if s == 0:
-        if want_seg and hit.geom_id != -1:
-          if hit.geom_id == -2:
-            out.seg[worldid, out.seg_adr[camid] + pixelid] = wp.vec2i(hit.mesh_id, int(ObjType.FLEX))
-          else:
-            out.seg[worldid, out.seg_adr[camid] + pixelid] = wp.vec2i(hit.geom_id, int(ObjType.GEOM))
-        if want_depth:
-          depth = float(0.0)
-          if hit.geom_id != -1:
-            # Planar depth: distance projected onto the optical axis (-z in camera frame).
-            depth = hit.dist * -ray_dir_cam[2]
-          out.depth[worldid, out.depth_adr[camid] + pixelid] = depth
-        if not want_rgb:
-          return
+        write_geometry(out, worldid, camid, pixelid, hit, ray_dir_cam, want_depth, want_seg)
 
       display += display_transform(radiance * exposure)
       hdr += radiance
