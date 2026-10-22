@@ -201,6 +201,28 @@ def franka_showroom() -> mujoco.MjSpec:
   return spec
 
 
+def isaac(scene: str, camera: str = "cam", stage: dict | None = None) -> Callable[[], mujoco.MjSpec]:
+  """A converted NVIDIA Isaac Sim / IsaacLab USD scene (requires `fetch_assets.py --only isaac`;
+  local use only: the assets must not be redistributed). Scenes keep their converted UsdLux
+  lights; `camera` names the converted USD camera used as "cam". With `stage` (kwargs of _stage)
+  the scene gets the standard floor, sun and camera instead."""
+
+  def make() -> mujoco.MjSpec:
+    path = asset_dir() / "mjcf" / scene / f"{scene}.xml"
+    if not path.exists():
+      raise FileNotFoundError(f"{path} missing: run tools/fetch_assets.py --only isaac")
+    spec = mujoco.MjSpec.from_file(str(path))
+    if stage is not None:
+      return _stage(spec, **stage)
+    cam = spec.camera(camera)
+    if cam is None:
+      raise ValueError(f"{path} has no camera {camera!r}")
+    cam.name = "cam"
+    return spec
+
+  return make
+
+
 SCENES = {
   "material_grid": ("material", material_grid),
   "primitives": ("robot", primitives),
@@ -212,7 +234,16 @@ SCENES = {
   "lantern": ("asset", khronos("Lantern")),
   "anymal_c": ("robot", menagerie_anymal),
   "franka_showroom": ("robot", franka_showroom),
+  # NVIDIA Isaac USD scenes converted by tools/usd_to_mjcf.py (lights and cameras from USD).
+  "isaac_renderer_gallery": ("asset", isaac("IsaacRendererGallery", camera="Camera")),
+  "isaac_franka_cabinet": ("robot", isaac("IsaacFrankaCabinet")),
+  "isaac_seattle_lab_table": (
+    "asset",
+    isaac(
+      "IsaacSeattleLabTable", stage={"camera_pos": [2.4, -1.5, 2.1], "camera_xyaxes": [0.679, 0.734, 0, -0.296, 0.274, 0.915]}
+    ),
+  ),
 }
 
 # Scenes lit by their own lights only: benchmarks pass no environment map for them.
-LIGHTS_ONLY = {"franka_showroom"}
+LIGHTS_ONLY = {"franka_showroom", "isaac_renderer_gallery", "isaac_franka_cabinet"}

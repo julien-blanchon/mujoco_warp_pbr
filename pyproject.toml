@@ -32,6 +32,7 @@ bench = [
     "newton",
     "pygltflib>=1.16.5",
     "trimesh",
+    "usd-core",
 ]
 
 [[tool.uv.index]]

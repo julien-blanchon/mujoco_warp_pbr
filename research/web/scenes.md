@@ -13,6 +13,16 @@ USD scenes were parsed from their layers. Unverified items are marked.
 `Environments/environment-supplement-LICENSE.txt` declares them "Limited Use Content: for your use
 only, without modifications". Treat them as not redistributable.
 
+Folder by folder (checked 2026-10-22 on the 6.2 listing):
+- `IsaacLab/Robots/FrankaEmika/`: Apache-2.0 `LICENSE` (the USD was generated from MuJoCo
+  Menagerie's panda by the MuJoCo USD converter).
+- `Props/Sektion_Cabinet/`, `Props/Mounts/SeattleLabTable/`, `IsaacLab/Docs/Renderers/`: no
+  `LICENSE` file. The gallery scene also pulls two NVIDIA Base materials (Parquet_Floor,
+  Marble_Tile_12) from the `Assets/Isaac/2022.2.1/NVIDIA/Materials/` tree, also without a licence file.
+- So: download and convert locally for benchmarking only. Never commit, upload or redistribute the
+  USD files, the textures or the converted MJCF. `tools/fetch_assets.py --only isaac` prints this
+  note and is opt-in (a plain `fetch_assets.py` run does not fetch Isaac assets).
+
 | scene (use) | path under `{root}/Isaac/` | size | materials | lights | to MJCF |
 | --- | --- | --- | --- | --- | --- |
 | renderer gallery scene (IsaacLab renderer docs) | `IsaacLab/Docs/Renderers/renderer_gallery_scene.usda` | 0.03 MB | 10 UsdPreviewSurface (+2 remote MDL floors) | Dome, Rect | easy with a USD converter |
@@ -51,6 +61,36 @@ The PBR path is therefore a dedicated USD → MJCF converter (like `tools/gltf_t
 
 Estimated effort is 2–4 days for static visual scenes. Suggested order: gallery scene and
 Franka-Cabinet, then the OmniPBR-textured props, then the light-rich kitchen.
+
+### Status: `tools/usd_to_mjcf.py` (2026-10-22)
+
+Implemented as above, minus robot kinematics: articulations are posed from UsdPhysics joints
+(`joint_positions`) and baked into static visual geoms. Benchmark scenes (`benchmarks/scenes.py`,
+fetched with `tools/fetch_assets.py --only isaac` into `$MJPBR_ASSET_DIR/mjcf/<Scene>/`):
+
+| scene | source | converted | lights |
+| --- | --- | --- | --- |
+| `isaac_renderer_gallery` | gallery scene + 2 remote Base MDLs (25 MB) | PreviewSurface spheres (mirror, glass, emissive); floors via the OmniPBR-wrapping MDLs: base colour, normal, ORM, `texture_scale` | RectLight → spot; the DomeLight is authored `invisible`, so it is dropped |
+| `isaac_franka_cabinet` | Franka + Sektion cabinet, composed like `Isaac-RenderBenchmark-Franka-Cabinet` (8 MB) | 67 meshes (instance proxies), PreviewSurface constants, ground cuboid; Franka in IsaacLab's default pose (matches MuJoCo FK of the Menagerie panda) | Dome 2000 → skybox, clamped from 1.2 to 1; Distant 200 lux |
+| `isaac_seattle_lab_table` | SeattleLabTable (76 MB, 4k maps downscaled to 2k) | OmniPBR: diffuse, normal, roughness and metallic textures (packed ORM), GeomSubsets | none (standard sun / HDRI) |
+
+**Light calibration.** One factor maps USD intensities to the renderer's physical units:
+pixel-per-nit of the USD camera's exposure (`exposure:fStop/time/iso/responsivity`, else Kit's
+f/5, 1/50 s, ISO 100 → 8e-4) times 1.2 · 2^EV100 at the renderer's default EV100 (≈ 31–34).
+DistantLight intensity is lux; sphere / rect / disk radiance × emitting area gives candela.
+With this, the gallery's key light and the Franka-Cabinet dome look as bright as in Kit.
+
+**Findings.**
+- Kit's uniform dome lights are bright: Franka-Cabinet's 0.75 × 2000 is 1.2 display-relative.
+  The real-time tier's IBL is unoccluded, so the robot shows up as a flat white silhouette. The
+  path-traced tier (dome as skybox, occluded) looks right.
+- The NVIDIA Base material library MDLs are thin `::OmniPBR::OmniPBR(...)` wrappers. Their
+  argument lists are parsed, which gives normal and ORM maps that the scene's PreviewSurface
+  fallback lacks.
+- USD st and OpenGL-convention normal maps work unchanged: UVs are written to the OBJ as they are,
+  and a synthetic bump renders lit from the correct side on both axes.
+- Not done: replicator_kitchen. It references ~25 SimReady props and vMaterials / Base MDLs across
+  the tree; that needs a dependency-driven fetch and probably exceeds the 150 MB budget.
 
 ## glTF PBR showcases (Khronos sample assets)
 
