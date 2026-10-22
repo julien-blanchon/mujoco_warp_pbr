@@ -142,6 +142,7 @@ class SensorPbrCamera:
     fovy: float = 60.0,
     lights: list[Light] | None = None,
     envmap=None,
+    headlight=None,
     **render_options,
   ):
     """Builds the MuJoCo appearance model and the render context.
@@ -153,6 +154,7 @@ class SensorPbrCamera:
       fovy: Vertical field of view [deg].
       lights: Lights added to the scene; None uses :func:`default_lights` when no envmap is given.
       envmap: Equirectangular HDR environment (path or array) lighting the scene.
+      headlight: None (off) or (ambient, diffuse, specular) RGB of MuJoCo's camera headlight.
       **render_options: Further `mujoco_warp_pbr.create_render_context` options (e.g. `tier`,
         `samples_per_pixel`, `light_model`, `envmap_intensity`).
     """
@@ -161,7 +163,7 @@ class SensorPbrCamera:
     self.height = height
     if lights is None and envmap is None:
       lights = default_lights()
-    self.scene = build_scene(model, lights, fovy)
+    self.scene = build_scene(model, lights, fovy, headlight)
     mjm = self.scene.mjm
     self.nworld = max(int(model.world_count), 1)
     self.mjm = mjm

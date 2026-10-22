@@ -11,13 +11,13 @@ import warp as wp
 
 import newton_pbr
 
-model = builder.finalize()          # any Newton model; worlds must have the same visible shapes
+model = builder.finalize()  # any Newton model; worlds must have the same visible shapes
 state = model.state()
 
 camera = newton_pbr.SensorPbrCamera(model, width=128, height=128, fovy=60.0, envmap="studio.hdr")
-color = camera.allocate_image_color()            # (world_count, height, width), packed RGBA
+color = camera.allocate_image_color()  # (world_count, height, width), packed RGBA
 depth = camera.allocate_image_depth()
-camera_transforms = wp.array([...], dtype=wp.transformf)   # one per world, -Z forward, +Y up
+camera_transforms = wp.array([...], dtype=wp.transformf)  # one per world, -Z forward, +Y up
 
 camera.update(state, camera_transforms, color_image=color, depth_image=depth)
 ```
@@ -44,6 +44,16 @@ are never used.
 - scalar mesh metallic / roughness, as imported from USD.
 
 Newton drops normal, ORM and emissive maps at import, so they are not available here.
+
+**Limits of Newton's importers.** For MJCF loaded with `add_mjcf`:
+- materials collapse to a colour and scalars, and textures are kept only when the UVs map one
+  per vertex;
+- lights are dropped;
+- planes are collision-only.
+
+`newton_pbr.lights_from_mujoco(mjm, mjd)` and the `headlight=` option restore an MJCF scene's
+lighting. Newton shape colours are sRGB, while mujoco_warp_pbr reads MuJoCo `rgba` as linear, so the
+same MJCF looks darker through Newton.
 
 **Lights.** Newton models carry no lights. Pass `envmap=` for image-based lighting and / or
 `lights=[newton_pbr.Light(...)]`. Without either, a key and a fill directional light are used.

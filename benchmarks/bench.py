@@ -125,6 +125,12 @@ def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
 
     rig = newton_camera.NewtonCamera(spec, mjm, args.nworld, args.res, depth=args.depth)
     return None, None, rig, None, rig.render
+  if args.renderer == "newton_pbr":
+    from references import newton_camera
+
+    extra = {k: _parse_value(v) for k, v in (kv.split("=", 1) for kv in args.set)}
+    rig = newton_camera.NewtonPbrCamera(spec, mjm, args.nworld, args.res, depth=args.depth, **extra)
+    return None, None, rig, None, rig.render
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
@@ -221,7 +227,7 @@ def time_graph(step, iters: int, repeats: int) -> list[float]:
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--scene", default="material_grid", choices=sorted(scenes.SCENES))
-  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "mujoco", "mitsuba"])
+  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "newton_pbr", "mujoco", "mitsuba"])
   parser.add_argument("--nworld", type=int, default=1024)
   parser.add_argument("--res", type=int, default=64)
   parser.add_argument("--depth", action="store_true")

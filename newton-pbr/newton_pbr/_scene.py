@@ -78,6 +78,36 @@ class Light:
   cast_shadow: bool = True
 
 
+def lights_from_mujoco(mjm: mujoco.MjModel, mjd: mujoco.MjData) -> list[Light]:
+  """The active lights of a MuJoCo model at state `mjd`.
+
+  Keeps the lighting of an MJCF scene loaded into Newton, whose importer drops lights.
+  """
+  kinds = {
+    int(mujoco.mjtLightType.mjLIGHT_DIRECTIONAL): "directional",
+    int(mujoco.mjtLightType.mjLIGHT_POINT): "point",
+    int(mujoco.mjtLightType.mjLIGHT_SPOT): "spot",
+  }
+  lights = []
+  for i in range(mjm.nlight):
+    if not mjm.light_active[i] or int(mjm.light_type[i]) not in kinds:
+      continue
+    lights.append(
+      Light(
+        type=kinds[int(mjm.light_type[i])],
+        pos=tuple(mjd.light_xpos[i]),
+        dir=tuple(mjd.light_xdir[i]),
+        intensity=float(mjm.light_intensity[i]),
+        color=tuple(mjm.light_diffuse[i]),
+        range=float(mjm.light_range[i]),
+        cutoff=float(mjm.light_cutoff[i]),
+        bulb_radius=float(mjm.light_bulbradius[i]),
+        cast_shadow=bool(mjm.light_castshadow[i]),
+      )
+    )
+  return lights
+
+
 def default_lights() -> list[Light]:
   """A key light with shadows and a dim fill, for scenes without an environment map."""
   return [
@@ -140,8 +170,11 @@ def _add_texture(spec: mujoco.MjSpec, name: str, texture) -> str | None:
   return name
 
 
-def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: float) -> SceneMapping:
-  """Builds the MuJoCo appearance model of a Newton model (worlds must have identical shapes)."""
+def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: float, headlight=None) -> SceneMapping:
+  """Builds the MuJoCo appearance model of a Newton model (worlds must have identical shapes).
+
+  headlight: None (off) or (ambient, diffuse, specular) RGB triples of MuJoCo's headlight.
+  """
   shape_world = model.shape_world.numpy()
   shape_type = model.shape_type.numpy()
   shape_scale = model.shape_scale.numpy()
@@ -164,7 +197,9 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
   shapes0 = np.concatenate([per_world[0], global_shapes])
 
   spec = mujoco.MjSpec()
-  spec.visual.headlight.active = 0
+  spec.visual.headlight.active = int(headlight is not None)
+  if headlight is not None:
+    spec.visual.headlight.ambient, spec.visual.headlight.diffuse, spec.visual.headlight.specular = headlight
   spec.compiler.texturedir = ""
   for i, shape in enumerate(shapes0):
     gtype = int(shape_type[shape])
@@ -185,7 +220,10 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
       mesh_spec = spec.add_mesh(name=f"mesh{i}", uservert=verts.ravel().tolist(), userface=faces.ravel().tolist())
       if normals is not None and len(normals) == len(verts):
         mesh_spec.usernormal = normals.ravel().tolist()
-      if uvs is not None and len(uvs) == len(verts):
+      # Per-vertex UVs only: a texture is mapped only when there is one UV per vertex.
+      if uvs is not None and len(uvs) != len(verts):
+        uvs = None
+      if uvs is not None:
         mesh_spec.usertexcoord = uvs.ravel().tolist()
       geom.type = mujoco.mjtGeom.mjGEOM_MESH
       geom.meshname = f"mesh{i}"

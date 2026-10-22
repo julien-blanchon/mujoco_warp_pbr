@@ -19,11 +19,12 @@ The cache root is $MJPBR_ASSET_DIR (default: ~/.cache/mujoco_warp_pbr). Assets a
 committed to the repository. Downloads are pinned (Khronos commit, Poly Haven md5) and
 idempotent: files already present are skipped.
 
+MuJoCo Menagerie robots are used as MJCF directly ($MJPBR_ASSET_DIR/menagerie/<robot>/).
 Khronos models are also converted to MJCF (tools/gltf_to_mjcf.py, normalised to a 1 m extent)
 into $MJPBR_ASSET_DIR/mjcf/<Model>/<Model>.xml.
 
 Usage:
-  python tools/fetch_assets.py [--only khronos|hdri] [--list]
+  python tools/fetch_assets.py [--only khronos|menagerie|hdri] [--list]
 """
 
 import argparse
@@ -62,6 +63,18 @@ KHRONOS_MODELS = {
   "DamagedHelmet": "CC-BY-4.0",
   "FlightHelmet": "CC0-1.0",
   "SciFiHelmet": "CC0-1.0",
+  # PBR showcase scenes.
+  "ABeautifulGame": "CC-BY-4.0",
+  "Corset": "CC0-1.0",
+  "Lantern": "CC0-1.0",
+}
+
+MENAGERIE_COMMIT = "cda5236f98383f6fbaa4820c6b18dba892cd087f"
+MENAGERIE_REPO = "https://github.com/google-deepmind/mujoco_menagerie.git"
+# Robot folder -> license (MJCF used as is).
+MENAGERIE_MODELS = {
+  "anybotics_anymal_c": "BSD-3-Clause",
+  "franka_emika_panda": "Apache-2.0",
 }
 
 # Poly Haven HDRIs (all CC0), 1k equirectangular .hdr.
@@ -133,6 +146,19 @@ def fetch_khronos(root: Path):
     convert(src[0], out, model, normalize=MJCF_EXTENT)
 
 
+def fetch_menagerie(root: Path):
+  repo = root / "menagerie"
+  if not repo.exists():
+    repo.mkdir(parents=True)
+    _git(repo, "init", "--quiet")
+    _git(repo, "remote", "add", "origin", MENAGERIE_REPO)
+  _git(repo, "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "origin", MENAGERIE_COMMIT)
+  _git(repo, "sparse-checkout", "set", "--no-cone", *[f"/{model}/" for model in MENAGERIE_MODELS])
+  _git(repo, "checkout", "--quiet", MENAGERIE_COMMIT)
+  for model, license_id in MENAGERIE_MODELS.items():
+    print(f"menagerie {model:28s} {license_id}")
+
+
 def fetch_hdris(root: Path):
   for hdri in POLYHAVEN_HDRIS:
     info = json.loads(_get(f"https://api.polyhaven.com/files/{hdri}"))["hdri"][HDRI_RESOLUTION]["hdr"]
@@ -142,13 +168,15 @@ def fetch_hdris(root: Path):
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--only", choices=["khronos", "hdri"])
+  parser.add_argument("--only", choices=["khronos", "menagerie", "hdri"])
   parser.add_argument("--list", action="store_true", help="print the manifest and exit")
   args = parser.parse_args()
 
   if args.list:
     for model, license_id in KHRONOS_MODELS.items():
       print(f"khronos {model:30s} {license_id}")
+    for model, license_id in MENAGERIE_MODELS.items():
+      print(f"menagerie {model:28s} {license_id}")
     for hdri in POLYHAVEN_HDRIS:
       print(f"hdri    {hdri:30s} CC0-1.0")
     return
@@ -157,6 +185,8 @@ def main():
   print(f"asset dir: {root}")
   if args.only in (None, "khronos"):
     fetch_khronos(root)
+  if args.only in (None, "menagerie"):
+    fetch_menagerie(root)
   if args.only in (None, "hdri"):
     fetch_hdris(root)
 

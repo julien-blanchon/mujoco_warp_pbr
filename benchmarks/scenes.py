@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable
 
 import mujoco
+import numpy as np
 
 _LIGHT = '<light name="sun" type="directional" dir="-0.4 0.6 -0.7" castshadow="true"/>'
 
@@ -114,10 +115,104 @@ def khronos(model: str, extent: float = 1.0) -> Callable[[], mujoco.MjSpec]:
   return scene
 
 
+def _bake_pose(spec: mujoco.MjSpec, keyframe: str | None = None) -> mujoco.MjSpec:
+  """Freezes the model at a keyframe (or qpos0): bodies get their posed local frames and every
+  joint, actuator, sensor, tendon, equality and keyframe is removed, so any consumer (MuJoCo,
+  Newton's MJCF importer, Mitsuba) sees the posed, static scene."""
+  mjm = spec.compile()
+  mjd = mujoco.MjData(mjm)
+  if keyframe is not None:
+    mujoco.mj_resetDataKeyframe(mjm, mjd, mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_KEY, keyframe))
+  mujoco.mj_forward(mjm, mjd)
+  for body in spec.bodies[1:]:
+    b = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, body.name)
+    parent = mjm.body_parentid[b]
+    inv = np.zeros(4)
+    mujoco.mju_negQuat(inv, mjd.xquat[parent])
+    pos = np.zeros(3)
+    mujoco.mju_rotVecQuat(pos, mjd.xpos[b] - mjd.xpos[parent], inv)
+    quat = np.zeros(4)
+    mujoco.mju_mulQuat(quat, inv, mjd.xquat[b])
+    body.pos, body.quat = pos, quat
+  for elements in (spec.actuators, spec.sensors, spec.tendons, spec.equalities, spec.keys, spec.joints):
+    for element in list(elements):
+      spec.delete(element)
+  return spec
+
+
+def _stage(spec: mujoco.MjSpec, camera_pos, camera_xyaxes, fovy: float = 45.0, sun: bool = True):
+  """Adds a floor, the camera and (optionally) the standard sun to a robot / asset spec."""
+  spec.visual.headlight.ambient = [0.2] * 3
+  spec.visual.headlight.diffuse = [0.3] * 3
+  spec.visual.headlight.specular = [0.3] * 3
+  spec.add_material(name="stage_floor", rgba=[0.5, 0.5, 0.5, 1.0], roughness=0.9)
+  world = spec.worldbody
+  if sun:
+    world.add_light(name="sun", type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL, dir=[-0.4, 0.6, -0.7], castshadow=True)
+  world.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[5, 5, 0.1], material="stage_floor")
+  world.add_camera(name="cam", pos=list(camera_pos), xyaxes=list(camera_xyaxes), fovy=fovy)
+  return spec
+
+
+def menagerie_anymal() -> mujoco.MjSpec:
+  """MuJoCo Menagerie ANYmal C (textured) standing on a floor (requires tools/fetch_assets.py)."""
+  path = asset_dir() / "menagerie" / "anybotics_anymal_c" / "anymal_c.xml"
+  if not path.exists():
+    raise FileNotFoundError(f"{path} missing: run tools/fetch_assets.py")
+  spec = _bake_pose(mujoco.MjSpec.from_file(str(path)))
+  return _stage(spec, camera_pos=[1.3, -1.5, 0.9], camera_xyaxes=[0.76, 0.65, 0, -0.25, 0.29, 0.92])
+
+
+def franka_showroom() -> mujoco.MjSpec:
+  """Menagerie Franka Panda (home pose) lit only by an authored rig, no environment map: a warm
+  key spot with a soft bulb, a cool fill point light and a rim light from behind."""
+  path = asset_dir() / "menagerie" / "franka_emika_panda" / "panda.xml"
+  if not path.exists():
+    raise FileNotFoundError(f"{path} missing: run tools/fetch_assets.py")
+  spec = _bake_pose(mujoco.MjSpec.from_file(str(path)), keyframe="home")
+  spec = _stage(spec, camera_pos=[1.6, -1.2, 0.95], camera_xyaxes=[0.6, 0.8, 0, -0.3, 0.22, 0.93], sun=False)
+  spec.visual.headlight.active = 0
+  world = spec.worldbody
+  world.add_light(
+    name="key",
+    type=mujoco.mjtLightType.mjLIGHT_SPOT,
+    pos=[1.2, -0.8, 1.8],
+    dir=[-0.55, 0.35, -0.75],
+    diffuse=[1.0, 0.92, 0.8],
+    cutoff=40,
+    bulbradius=0.08,
+    castshadow=True,
+  )
+  world.add_light(
+    name="fill",
+    type=mujoco.mjtLightType.mjLIGHT_POINT,
+    pos=[-0.6, -1.4, 0.9],
+    diffuse=[0.35, 0.42, 0.55],
+    bulbradius=0.15,
+    castshadow=False,
+  )
+  world.add_light(
+    name="rim",
+    type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
+    dir=[0.3, -0.9, -0.3],
+    diffuse=[0.5, 0.55, 0.6],
+    castshadow=True,
+  )
+  return spec
+
+
 SCENES = {
   "material_grid": ("material", material_grid),
   "primitives": ("robot", primitives),
   "damaged_helmet": ("asset", khronos("DamagedHelmet")),
   "flight_helmet": ("asset", khronos("FlightHelmet")),
   "scifi_helmet": ("asset", khronos("SciFiHelmet")),
+  "a_beautiful_game": ("asset", khronos("ABeautifulGame", extent=0.65)),
+  "corset": ("asset", khronos("Corset")),
+  "lantern": ("asset", khronos("Lantern")),
+  "anymal_c": ("robot", menagerie_anymal),
+  "franka_showroom": ("robot", franka_showroom),
 }
+
+# Scenes lit by their own lights only: benchmarks pass no environment map for them.
+LIGHTS_ONLY = {"franka_showroom"}
