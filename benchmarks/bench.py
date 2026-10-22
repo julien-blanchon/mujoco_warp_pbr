@@ -95,6 +95,20 @@ def build(args, mjm: mujoco.MjModel):
   return m, d, rc, base, step
 
 
+def randomize(m, rc, nworld: int, seed: int = 0):
+  """Per-world appearance randomisation: colours, metallic, roughness, environment map and yaw."""
+  rng = np.random.default_rng(seed)
+  ngeom = m.geom_rgba.shape[1]
+  rgba = np.concatenate([rng.uniform(0.05, 0.95, (nworld, ngeom, 3)), np.ones((nworld, ngeom, 1))], axis=-1)
+  m.geom_rgba = wp.array(rgba.astype(np.float32), dtype=wp.vec4)
+  if isinstance(rc, mjpbr.PbrRenderContext):
+    rc.geom_metallic = wp.array(rng.uniform(0, 1, (nworld, ngeom)).astype(np.float32), dtype=float)
+    rc.geom_roughness = wp.array(rng.uniform(0.05, 1, (nworld, ngeom)).astype(np.float32), dtype=float)
+    nenv = rc.env_radiance.shape[0]
+    rc.env_id = wp.array(rng.integers(0, nenv, nworld), dtype=int)
+    rc.env_yaw = wp.array(rng.uniform(0, 2 * np.pi, nworld).astype(np.float32), dtype=float)
+
+
 def time_graph(step, iters: int, repeats: int) -> list[float]:
   step()  # compile and warm up outside the capture
   wp.synchronize()
@@ -123,6 +137,7 @@ def main():
   parser.add_argument("--iters", type=int, default=20)
   parser.add_argument("--repeats", type=int, default=5)
   parser.add_argument("--set", action="append", default=[], help="extra create_render_context kwarg KEY=VALUE")
+  parser.add_argument("--randomize", action="store_true", help="per-world appearance randomisation")
   parser.add_argument("--out", type=Path)
   parser.add_argument("--save-image", type=Path)
   parser.add_argument("--allow-busy", action="store_true", help="run even if other GPU processes are present")
@@ -135,6 +150,8 @@ def main():
   group, make = scenes.SCENES[args.scene]
   mjm = make()
   m, d, rc, base, step = build(args, mjm)
+  if args.randomize:
+    randomize(m, rc, args.nworld)
   jit_start = time.perf_counter()
   step()
   wp.synchronize()
@@ -149,6 +166,7 @@ def main():
     "nworld": args.nworld,
     "res": args.res,
     "refit": args.refit,
+    "randomize": args.randomize,
     "options": args.set,
     "ms_per_frame_batch": median * 1e3,
     "frames_per_s": frames / median,
