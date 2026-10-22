@@ -1,0 +1,7 @@
+{"scene": "damaged_helmet", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.022935278713703156, "psnr": 38.138600296220474, "relmse": 0.008885332383215427}
+{"scene": "furnace", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.0038133065681904554, "psnr": 49.75098487640547, "relmse": 0.00020210887305438519}
+{"scene": "grid_env", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.01582469418644905, "psnr": 40.75902337228217, "relmse": 0.0009350869804620743}
+{"scene": "grid_point", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.0012093281839042902, "psnr": 61.72883914536632, "relmse": 3.8076366763561964e-05}
+{"scene": "grid_sun", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.001653399900533259, "psnr": 58.75328741731739, "relmse": 4.127909414819442e-05}
+{"scene": "normal_tangent", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.03584088385105133, "psnr": 28.591143079842787, "relmse": 0.3921465575695038}
+{"scene": "water_bottle", "tier": "path", "integrator": "direct", "bsdf": "filament", "res": 256, "flip": 0.014517856761813164, "psnr": 45.869339544807765, "relmse": 0.0003608881088439375}

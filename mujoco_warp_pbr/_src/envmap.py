@@ -49,6 +49,8 @@ PREFILTER_LEVELS = 8
 PREFILTER_SAMPLES = 512
 # Radiance textures larger than this are downsampled (box filter) before upload.
 MAX_RADIANCE_WIDTH = 2048
+# Resolution of the luminance distribution used for importance sampling (path-traced tier).
+CDF_WIDTH = 256
 
 
 def load_hdr(path: str | Path) -> np.ndarray:
@@ -308,13 +310,110 @@ class EnvironmentMap:
     self.width = w
 
 
-def build_environments(images: list[np.ndarray]) -> Tuple[list, wp.array, wp.array, wp.array, float]:
-  """Returns (maps, radiance textures, prefiltered stacks, SH (nenv, 9), max radiance width)."""
+def sampling_distribution(image: np.ndarray, width: int = CDF_WIDTH) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Piecewise-constant distribution over equirect cells ∝ luminance · sin θ.
+
+  Returns (cell probabilities (h, w), marginal row CDF (h + 1,), conditional column CDFs
+  (h, w + 1)); probabilities sum to 1.
+  """
+  small = _downsample(np.asarray(image, dtype=np.float64)[..., :3], width)
+  h, w, _ = small.shape
+  luminance = small @ np.array([0.2126, 0.7152, 0.0722])
+  sin_theta = np.sin((np.arange(h) + 0.5) / h * np.pi)[:, None]
+  # A small floor keeps every direction reachable (unbiased MIS with BSDF sampling).
+  weight = luminance * sin_theta + 1e-6 * max(float(luminance.mean()), 1e-12)
+  prob = weight / weight.sum()
+  row = prob.sum(axis=1)
+  marginal = np.concatenate([[0.0], np.cumsum(row)])
+  conditional = np.concatenate([np.zeros((h, 1)), np.cumsum(prob, axis=1) / np.maximum(row[:, None], 1e-30)], axis=1)
+  marginal[-1] = 1.0
+  conditional[:, -1] = 1.0
+  return prob.astype(np.float32), marginal.astype(np.float32), conditional.astype(np.float32)
+
+
+@wp.func
+def _search(cdf: wp.array2d[float], row: int, n: int, u: float) -> int:
+  """Largest i in [0, n) with cdf[row, i] <= u."""
+  lo = int(0)
+  hi = n
+  while hi - lo > 1:
+    mid = (lo + hi) // 2
+    if cdf[row, mid] <= u:
+      lo = mid
+    else:
+      hi = mid
+  return lo
+
+
+@wp.func
+def sample_direction(
+  marginal: wp.array2d[float],
+  conditional: wp.array3d[float],
+  prob: wp.array3d[float],
+  env: int,
+  yaw: float,
+  u: wp.vec2,
+) -> Tuple[wp.vec3, float]:
+  """World direction drawn ∝ the environment's luminance, and its solid-angle pdf."""
+  h = prob.shape[1]
+  w = prob.shape[2]
+  r = _search(marginal, env, h, u[0])
+  c0 = marginal[env, r]
+  dv = (u[0] - c0) / wp.max(marginal[env, r + 1] - c0, 1.0e-12)
+  # Columns of row r: conditional[env, r, :], searched through a 2D view per env.
+  lo = int(0)
+  hi = w
+  while hi - lo > 1:
+    mid = (lo + hi) // 2
+    if conditional[env, r, mid] <= u[1]:
+      lo = mid
+    else:
+      hi = mid
+  c = lo
+  k0 = conditional[env, r, c]
+  du = (u[1] - k0) / wp.max(conditional[env, r, c + 1] - k0, 1.0e-12)
+  uv = wp.vec2((float(c) + wp.clamp(du, 0.0, 1.0)) / float(w), (float(r) + wp.clamp(dv, 0.0, 1.0)) / float(h))
+  d = rotate_yaw(uv_to_direction(uv), yaw)
+  sin_theta = wp.max(wp.sin(uv[1] * wp.pi), 1.0e-6)
+  pdf = prob[env, r, c] * float(w * h) / (wp.static(2.0 * wp.pi * wp.pi) * sin_theta)
+  return d, pdf
+
+
+@wp.func
+def direction_pdf(prob: wp.array3d[float], env: int, yaw: float, direction: wp.vec3) -> float:
+  """Solid-angle pdf of `sample_direction` for a world direction."""
+  h = prob.shape[1]
+  w = prob.shape[2]
+  uv = direction_to_uv(direction, yaw)
+  c = wp.min(int(uv[0] * float(w)), w - 1)
+  r = wp.min(int(uv[1] * float(h)), h - 1)
+  sin_theta = wp.max(wp.sin(uv[1] * wp.pi), 1.0e-6)
+  return prob[env, r, c] * float(w * h) / (wp.static(2.0 * wp.pi * wp.pi) * sin_theta)
+
+
+def build_environments(images: list[np.ndarray]) -> dict:
+  """GPU resources for a list of environment maps (sampling tables share one resolution)."""
   maps = [EnvironmentMap(im) for im in images]
-  radiance = wp.array([e.radiance for e in maps], dtype=wp.Texture2D)
-  prefiltered = wp.array([e.prefiltered for e in maps], dtype=wp.Texture3D)
-  sh = wp.array(np.stack([e.sh for e in maps]), dtype=wp.vec3)
-  return maps, radiance, prefiltered, sh, float(max(e.width for e in maps))
+  tables = [sampling_distribution(im) for im in images]
+  shape = tables[0][0].shape
+  tables = [t if t[0].shape == shape else sampling_distribution(_resize_nearest(im, shape)) for t, im in zip(tables, images)]
+  return {
+    "maps": maps,
+    "radiance": wp.array([e.radiance for e in maps], dtype=wp.Texture2D),
+    "prefiltered": wp.array([e.prefiltered for e in maps], dtype=wp.Texture3D),
+    "sh": wp.array(np.stack([e.sh for e in maps]), dtype=wp.vec3),
+    "width": float(max(e.width for e in maps)),
+    "prob": wp.array(np.stack([t[0] for t in tables]), dtype=float),
+    "marginal": wp.array(np.stack([t[1] for t in tables]), dtype=float),
+    "conditional": wp.array(np.stack([t[2] for t in tables]), dtype=float),
+  }
+
+
+def _resize_nearest(image: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+  h, w = shape
+  ys = (np.arange(h) + 0.5) / h * image.shape[0]
+  xs = (np.arange(w) + 0.5) / w * image.shape[1]
+  return image[ys.astype(int)][:, xs.astype(int)]
 
 
 def texel_angle(width: float) -> float:

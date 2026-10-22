@@ -35,16 +35,22 @@ from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp_pbr._src import brdf
 from mujoco_warp_pbr._src import envmap
 from mujoco_warp_pbr._src import ibl
+from mujoco_warp_pbr._src import kernel_inputs
 from mujoco_warp_pbr._src import lights
 from mujoco_warp_pbr._src import material
+from mujoco_warp_pbr._src import pathtrace
 from mujoco_warp_pbr._src import texture
 from mujoco_warp_pbr._src import trace
 from mujoco_warp_pbr._src.color import make_display_transform
 from mujoco_warp_pbr._src.color import srgb_oetf
+from mujoco_warp_pbr._src.kernel_inputs import Cameras
+from mujoco_warp_pbr._src.kernel_inputs import Environment
+from mujoco_warp_pbr._src.kernel_inputs import Outputs
 from mujoco_warp_pbr._src.material import Materials
 from mujoco_warp_pbr._src.material import Surface
 from mujoco_warp_pbr._src.trace import Geometry
 from mujoco_warp_pbr._src.types import PbrRenderContext
+from mujoco_warp_pbr._src.types import Tier
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -52,58 +58,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _RAY_OFFSET = 1.0e-4
 # Stop compositing translucent layers once the remaining weight cannot change an 8-bit pixel.
 _MIN_THROUGHPUT = 1.0 / 255.0
-
-
-@wp.struct
-class Cameras:
-  # Model:
-  cam_projection: wp.array[int]
-  cam_fovy: wp.array2d[float]
-  cam_sensorsize: wp.array[wp.vec2]
-  cam_intrinsic: wp.array2d[wp.vec4]
-  # Data:
-  cam_xpos: wp.array2d[wp.vec3]
-  cam_xmat: wp.array2d[wp.mat33]
-  # Render context:
-  nrender: int
-  cam_res: wp.array[wp.vec2i]
-  cam_id_map: wp.array[int]
-  # Runtime loop bounds keep the sample loop rolled (constant bounds would be unrolled).
-  samples_per_axis: int
-
-
-@wp.struct
-class Environment:
-  exposure: wp.array[float]
-  ambient_radiance: wp.array[wp.vec3]
-  background: wp.vec3
-  dfg_lut: wp.Texture2D
-  env_radiance: wp.array[wp.Texture2D]
-  env_prefiltered: wp.array[wp.Texture3D]
-  env_sh: wp.array2d[wp.vec3]
-  env_id: wp.array[int]
-  env_intensity: wp.array[float]
-  env_yaw: wp.array[float]
-  max_layers: int
-
-
-@wp.struct
-class Outputs:
-  render_rgb: wp.array[bool]
-  render_depth: wp.array[bool]
-  render_seg: wp.array[bool]
-  rgb_adr: wp.array[int]
-  depth_adr: wp.array[int]
-  seg_adr: wp.array[int]
-  rgb: wp.array2d[wp.uint32]
-  depth: wp.array2d[float]
-  seg: wp.array2d[wp.vec2i]
-  hdr: wp.array2d[wp.vec3h]
-
-
-@wp.func
-def _rand2(seed: int, index: int) -> wp.vec2:
-  return wp.vec2(wp.randf(wp.rand_init(seed, 2 * index)), wp.randf(wp.rand_init(seed, 2 * index + 1)))
 
 
 def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
@@ -160,7 +114,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     t1, t2 = texture.orthonormal_basis(l)
     visible = float(0.0)
     for s in range(shadow_samples):
-      u = _rand2(seed, s)
+      u = kernel_inputs.rand2(seed, s)
       r = bulb_radius * wp.sqrt(u[0])
       phi = wp.static(2.0 * wp.pi) * u[1]
       to_target = light_pos + (t1 * wp.cos(phi) + t2 * wp.sin(phi)) * r - origin
@@ -561,53 +515,6 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   return render_megakernel
 
 
-def _cameras(m: Model, d: Data, rc: PbrRenderContext) -> Cameras:
-  cams = Cameras()
-  cams.cam_projection = m.cam_projection
-  cams.cam_fovy = m.cam_fovy
-  cams.cam_sensorsize = m.cam_sensorsize
-  cams.cam_intrinsic = m.cam_intrinsic
-  cams.cam_xpos = d.cam_xpos
-  cams.cam_xmat = d.cam_xmat
-  cams.nrender = rc.base.nrender
-  cams.cam_res = rc.base.cam_res
-  cams.cam_id_map = rc.base.cam_id_map
-  cams.samples_per_axis = rc.samples_per_pixel
-  return cams
-
-
-def _environment(rc: PbrRenderContext) -> Environment:
-  env = Environment()
-  env.exposure = rc.exposure
-  env.ambient_radiance = rc.ambient_radiance
-  env.background = rc.background_linear
-  env.dfg_lut = rc.dfg_lut
-  env.env_radiance = rc.env_radiance
-  env.env_prefiltered = rc.env_prefiltered
-  env.env_sh = rc.env_sh
-  env.env_id = rc.env_id
-  env.env_intensity = rc.env_intensity
-  env.env_yaw = rc.env_yaw
-  env.max_layers = rc.max_layers if rc.has_transparency else 1
-  return env
-
-
-def _outputs(rc: PbrRenderContext) -> Outputs:
-  base = rc.base
-  out = Outputs()
-  out.render_rgb = base.render_rgb
-  out.render_depth = base.render_depth
-  out.render_seg = base.render_seg
-  out.rgb_adr = base.rgb_adr
-  out.depth_adr = base.depth_adr
-  out.seg_adr = base.seg_adr
-  out.rgb = base.rgb_data
-  out.depth = base.depth_data
-  out.seg = base.seg_data
-  out.hdr = rc.hdr_data
-  return out
-
-
 @event_scope
 def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
   """Renders the current frame into the context's output buffers.
@@ -618,9 +525,12 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
     m: The model on device.
     d: The data on device.
     rc: The PBR render context on device.
-    seed: Random seed for stochastic effects (soft shadows); the image is a deterministic
-      function of the seed.
+    seed: Random seed for stochastic effects (soft shadows, path tracing); the image is a
+      deterministic function of the seed.
   """
+  if rc.tier == Tier.PATH:
+    pathtrace.render(m, d, rc, seed)
+    return
   rc.base.seg_data.fill_(wp.vec2i(-1, -1))
   if rc._megakernel is None:
     rc._megakernel = _build_megakernel(m, rc)
@@ -632,10 +542,10 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
       trace.geometry(m, d, rc.base),
       material.materials(m, rc),
       lights.lights(m, d, rc),
-      _cameras(m, d, rc),
-      _environment(rc),
+      kernel_inputs.cameras(m, d, rc),
+      kernel_inputs.environment(rc),
       int(seed),
     ],
-    outputs=[_outputs(rc)],
+    outputs=[kernel_inputs.outputs(rc)],
     block_dim=m.block_dim.render,
   )

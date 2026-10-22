@@ -29,6 +29,7 @@ from mujoco_warp_pbr._src import material
 from mujoco_warp_pbr._src import texture
 from mujoco_warp_pbr._src.types import LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext
+from mujoco_warp_pbr._src.types import Tier
 from mujoco_warp_pbr._src.types import ToneMapper
 from mujoco_warp_pbr._src.types import UnsetMaterial
 
@@ -75,6 +76,10 @@ def create_render_context(
   envmap_rotation: float = 0.0,
   envmap_background: bool = True,
   use_skybox: bool = True,
+  tier: int = Tier.REALTIME,
+  path_samples: int = 64,
+  max_depth: int = 4,
+  rr_depth: int = 3,
   render_hdr: bool = False,
 ) -> PbrRenderContext:
   """Creates a PBR render context on device.
@@ -117,6 +122,10 @@ def create_render_context(
     envmap_background: Show the environment map where rays hit nothing.
     use_skybox: Without `envmap`, light the scene (physical light model) and fill the
       background with the model's skybox texture, if it has one.
+    tier: Tier.REALTIME (direct lighting + split-sum IBL) or Tier.PATH (path tracing).
+    path_samples: Path-traced samples per pixel (random sub-pixel positions).
+    max_depth: Maximum path length in bounces (path-traced tier).
+    rr_depth: Bounce after which Russian roulette may terminate paths (path-traced tier).
     render_hdr: Also write linear HDR radiance (before exposure and tone mapping) to `hdr_data`.
 
   Returns:
@@ -180,7 +189,8 @@ def create_render_context(
   # Only materials of rendered geoms decide which features the kernel is specialised on.
   rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
   rendered_mats = np.unique(mjm.geom_matid[rendered & (mjm.geom_matid >= 0)])
-  features = material.SurfaceFeatures(mjm, use_textures, specular_aa, rendered_mats)
+  # The path tracer resolves highlights and texture detail by sampling: no footprint filtering.
+  features = material.SurfaceFeatures(mjm, use_textures, specular_aa and tier == Tier.REALTIME, rendered_mats)
   used_tex = np.zeros(mjm.ntex, dtype=bool)
   if features.textures:
     ids = mjm.mat_texid[rendered_mats].ravel()
@@ -215,13 +225,20 @@ def create_render_context(
       skybox_only = not physical
   has_env = bool(images) and not skybox_only
   if images:
-    env_maps, env_radiance, env_prefiltered, env_sh, env_width = envmap_lib.build_environments(images)
+    env = envmap_lib.build_environments(images)
   else:
-    env_maps, env_width = [], 1.0
-    env_radiance = wp.array([wp.Texture2D(np.zeros((1, 1, 4), np.float16))], dtype=wp.Texture2D)
-    env_prefiltered = wp.array([wp.Texture3D(np.zeros((1, 1, 1, 4), np.float16))], dtype=wp.Texture3D)
-    env_sh = wp.zeros((1, 9), dtype=wp.vec3)
-    env_maps = [env_radiance, env_prefiltered]
+    radiance = wp.Texture2D(np.zeros((1, 1, 4), np.float16))
+    prefiltered = wp.Texture3D(np.zeros((1, 1, 1, 4), np.float16))
+    env = {
+      "maps": [radiance, prefiltered],
+      "radiance": wp.array([radiance], dtype=wp.Texture2D),
+      "prefiltered": wp.array([prefiltered], dtype=wp.Texture3D),
+      "sh": wp.zeros((1, 9), dtype=wp.vec3),
+      "width": 1.0,
+      "prob": wp.ones((1, 1, 1), dtype=float),
+      "marginal": wp.array([[0.0, 1.0]], dtype=float),
+      "conditional": wp.array([[[0.0, 1.0]]], dtype=float),
+    }
   if envmap_intensity is None:
     envmap_intensity = 1.0 / exposure
   if has_env and physical:
@@ -249,11 +266,14 @@ def create_render_context(
     background_linear=wp.vec3(*background_linear),
     has_env=has_env,
     env_background=bool(images) and envmap_background,
-    env_maps=env_maps,
-    env_radiance=env_radiance,
-    env_prefiltered=env_prefiltered,
-    env_sh=env_sh,
-    env_texel_angle=envmap_lib.texel_angle(env_width),
+    env_maps=env["maps"],
+    env_radiance=env["radiance"],
+    env_prefiltered=env["prefiltered"],
+    env_sh=env["sh"],
+    env_texel_angle=envmap_lib.texel_angle(env["width"]),
+    env_prob=env["prob"],
+    env_marginal=env["marginal"],
+    env_conditional=env["conditional"],
     env_id=wp.zeros(1, dtype=int),
     env_intensity=wp.array([envmap_intensity], dtype=float),
     env_yaw=wp.array([np.radians(envmap_rotation)], dtype=float),
@@ -268,6 +288,10 @@ def create_render_context(
     has_reflection=has_reflection,
     unroll_lights=True,
     max_unroll=6,
+    tier=int(tier),
+    path_samples=path_samples,
+    max_depth=max_depth,
+    rr_depth=rr_depth,
     render_hdr=render_hdr,
     hdr_data=wp.zeros((nworld, ri if render_hdr else 1), dtype=wp.vec3h),
   )

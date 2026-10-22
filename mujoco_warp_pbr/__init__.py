@@ -23,5 +23,6 @@ from mujoco_warp_pbr._src.output import get_segmentation as get_segmentation
 from mujoco_warp_pbr._src.render import render as render
 from mujoco_warp_pbr._src.types import LightModel as LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext as PbrRenderContext
+from mujoco_warp_pbr._src.types import Tier as Tier
 from mujoco_warp_pbr._src.types import ToneMapper as ToneMapper
 from mujoco_warp_pbr._src.types import UnsetMaterial as UnsetMaterial

@@ -36,6 +36,20 @@ class LightModel(enum.IntEnum):
   MUJOCO = 1
 
 
+class Tier(enum.IntEnum):
+  """Rendering algorithm.
+
+  Attributes:
+    REALTIME: primary ray, ray-traced shadows, split-sum image-based lighting, optional mirror
+      ray and translucent layers. Deterministic and noise-free.
+    PATH: unidirectional path tracing with next-event estimation and multiple importance
+      sampling of lights, environment and BSDF. Converges to the reference image.
+  """
+
+  REALTIME = 0
+  PATH = 1
+
+
 class ToneMapper(enum.IntEnum):
   """Display transform applied to exposed linear HDR before sRGB encoding.
 
@@ -102,6 +116,9 @@ class PbrRenderContext:
     env_id: environment map shown in each world                        (*,)
     env_intensity: radiance scale of the environment map               (*,)
     env_yaw: rotation of the environment map about +z, radians         (*,)
+    env_prob: environment importance-sampling cell probabilities       (nenv, h, w)
+    env_marginal: row CDF of env_prob                                  (nenv, h + 1)
+    env_conditional: per-row column CDFs of env_prob                   (nenv, h, w + 1)
     textures: material textures indexed by MuJoCo texture id
     textures_registry: the wp.Texture2D objects behind `textures` (keeps them alive)
     tex_size: texture (width, height)                                  (ntex,)
@@ -114,6 +131,10 @@ class PbrRenderContext:
     unroll_lights: unroll the per-light loop at compile time (else a runtime loop)
     max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
       are unrolled)
+    tier: Tier
+    path_samples: path-traced samples per pixel
+    max_depth: maximum path length (bounces)
+    rr_depth: bounce after which Russian roulette applies
     render_hdr: whether linear HDR (pre-exposure, pre-tone-mapping) is written
     hdr_data: linear HDR radiance                                      (nworld, npixel)
     _megakernel: cached specialised render kernel
@@ -146,6 +167,9 @@ class PbrRenderContext:
   env_id: wp.array[int]
   env_intensity: wp.array[float]
   env_yaw: wp.array[float]
+  env_prob: wp.array3d[float]
+  env_marginal: wp.array2d[float]
+  env_conditional: wp.array3d[float]
   textures: wp.array[wp.Texture2D]
   textures_registry: list
   tex_size: wp.array[wp.vec2]
@@ -157,6 +181,10 @@ class PbrRenderContext:
   has_reflection: bool
   unroll_lights: bool
   max_unroll: int
+  tier: int
+  path_samples: int
+  max_depth: int
+  rr_depth: int
   render_hdr: bool
   hdr_data: wp.array2d[wp.vec3h]
   _megakernel: Any = None

@@ -115,3 +115,85 @@ def roughness_to_alpha(perceptual_roughness: float) -> Tuple[float, float]:
   """Clamps perceptual roughness and returns (perceptual_roughness, alpha)."""
   pr = wp.clamp(perceptual_roughness, wp.static(MIN_PERCEPTUAL_ROUGHNESS), 1.0)
   return pr, pr * pr
+
+
+# Sampling (path-traced tier). Directions are in a local frame whose +z is the shading normal.
+
+
+@wp.func
+def smith_g1(nov: float, alpha: float) -> float:
+  a2 = alpha * alpha
+  return 2.0 * nov / (nov + wp.sqrt(a2 + (1.0 - a2) * nov * nov))
+
+
+@wp.func
+def sample_ggx_vndf(v: wp.vec3, alpha: float, u: wp.vec2) -> wp.vec3:
+  """Half vector distributed as GGX's visible normals for view `v` (Heitz 2018)."""
+  vh = wp.normalize(wp.vec3(alpha * v[0], alpha * v[1], v[2]))
+  lensq = vh[0] * vh[0] + vh[1] * vh[1]
+  t1 = wp.vec3(1.0, 0.0, 0.0)
+  if lensq > 0.0:
+    t1 = wp.vec3(-vh[1], vh[0], 0.0) / wp.sqrt(lensq)
+  t2 = wp.cross(vh, t1)
+  r = wp.sqrt(u[0])
+  phi = wp.static(2.0 * wp.pi) * u[1]
+  p1 = r * wp.cos(phi)
+  p2 = r * wp.sin(phi)
+  s = 0.5 * (1.0 + vh[2])
+  p2 = (1.0 - s) * wp.sqrt(wp.max(1.0 - p1 * p1, 0.0)) + s * p2
+  nh = t1 * p1 + t2 * p2 + vh * wp.sqrt(wp.max(1.0 - p1 * p1 - p2 * p2, 0.0))
+  return wp.normalize(wp.vec3(alpha * nh[0], alpha * nh[1], wp.max(nh[2], 0.0)))
+
+
+@wp.func
+def eval_bsdf_cos(
+  # In:
+  diffuse_color: wp.vec3,
+  f0: wp.vec3,
+  alpha: float,
+  energy_comp: wp.vec3,
+  v: wp.vec3,
+  l: wp.vec3,
+) -> wp.vec3:
+  """BRDF × cos θ_l for local view `v` and light `l` (diffuse already (1 - E) weighted)."""
+  nol = l[2]
+  nov = wp.max(v[2], 1.0e-4)
+  if nol <= 0.0:
+    return wp.vec3(0.0)
+  h = wp.normalize(l + v)
+  spec = wp.cw_mul(specular_lobe(f0, alpha, wp.max(h[2], 0.0), nov, nol, wp.max(wp.dot(l, h), 0.0)), energy_comp)
+  return (diffuse_color * diffuse_lambert() + spec) * nol
+
+
+@wp.func
+def pdf_bsdf(alpha: float, p_spec: float, v: wp.vec3, l: wp.vec3) -> float:
+  """Solid-angle pdf of `sample_bsdf`: mixture of GGX VNDF and cosine-weighted hemisphere."""
+  if l[2] <= 0.0:
+    return 0.0
+  nov = wp.max(v[2], 1.0e-4)
+  h = wp.normalize(l + v)
+  pdf_spec = smith_g1(nov, alpha) * d_ggx(wp.max(h[2], 0.0), alpha) / (4.0 * nov)
+  pdf_diff = l[2] * wp.static(1.0 / wp.pi)
+  return p_spec * pdf_spec + (1.0 - p_spec) * pdf_diff
+
+
+@wp.func
+def specular_probability(diffuse_color: wp.vec3, spec_albedo: wp.vec3) -> float:
+  """Probability of sampling the specular lobe, from the lobes' albedo luminance."""
+  lum = wp.vec3(0.2126, 0.7152, 0.0722)
+  ws = wp.dot(spec_albedo, lum)
+  wd = wp.dot(diffuse_color, lum)
+  if wd <= 0.0:
+    return 1.0
+  return wp.clamp(ws / wp.max(ws + wd, 1.0e-6), 0.1, 0.9)
+
+
+@wp.func
+def sample_bsdf(alpha: float, p_spec: float, v: wp.vec3, u_lobe: float, u: wp.vec2) -> wp.vec3:
+  """Local light direction drawn from the mixture (may fall below the horizon: then rejected)."""
+  if u_lobe < p_spec:
+    h = sample_ggx_vndf(v, alpha, u)
+    return h * (2.0 * wp.dot(v, h)) - v
+  r = wp.sqrt(u[0])
+  phi = wp.static(2.0 * wp.pi) * u[1]
+  return wp.vec3(r * wp.cos(phi), r * wp.sin(phi), wp.sqrt(wp.max(1.0 - u[0], 0.0)))

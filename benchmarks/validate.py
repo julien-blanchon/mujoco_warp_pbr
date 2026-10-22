@@ -126,7 +126,9 @@ def tone_map(hdr: np.ndarray, exposure: float) -> np.ndarray:
   return np.where(c <= 0.0031308, 12.92 * c, 1.055 * np.power(c, 1 / 2.4) - 0.055)
 
 
-def render_ours(mjm, env, res: int, spp_axis: int):
+def render_ours(
+  mjm, env, res: int, spp_axis: int, tier: int = mjpbr.Tier.REALTIME, path_samples: int = 256, max_depth: int = 4
+):
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
@@ -142,6 +144,9 @@ def render_ours(mjm, env, res: int, spp_axis: int):
     render_hdr=True,
     samples_per_pixel=spp_axis,
     ev100=float(np.log2(1.0 / 1.2)),
+    tier=tier,
+    path_samples=path_samples,
+    max_depth=max_depth,
     **kwargs,
   )
   mjw.refit_bvh(m, d, rc.base)
@@ -159,6 +164,9 @@ def main():
   parser.add_argument("--aa", type=int, default=4, help="our sub-pixel samples per axis")
   parser.add_argument("--integrator", default="direct", choices=["direct", "path"])
   parser.add_argument("--bsdf", default="filament", choices=["filament", "principled"], help="Mitsuba-side material model")
+  parser.add_argument("--tier", default="realtime", choices=["realtime", "path"], help="our rendering tier")
+  parser.add_argument("--path-samples", type=int, default=512, help="our samples per pixel (path tier)")
+  parser.add_argument("--max-depth", type=int, default=4, help="surface interactions per path (path tier)")
   parser.add_argument("--out", type=Path, default=Path("results/validation"))
   args = parser.parse_args()
 
@@ -170,9 +178,21 @@ def main():
     make_model, make_env = VALIDATION[name]
     mjm = make_model()
     env = make_env() if make_env else None
-    mjd, rc, cam, ours = render_ours(mjm, env, args.res, args.aa)
+    tier = mjpbr.Tier.PATH if args.tier == "path" else mjpbr.Tier.REALTIME
+    mjd, rc, cam, ours = render_ours(mjm, env, args.res, args.aa, tier, args.path_samples, args.max_depth)
+    # Mitsuba's max_depth counts the camera segment.
     scene = mitsuba_scene.scene_dict(
-      mjm, mjd, rc, cam, args.res, args.res, args.spp, envmap=env, integrator=args.integrator, bsdf=args.bsdf
+      mjm,
+      mjd,
+      rc,
+      cam,
+      args.res,
+      args.res,
+      args.spp,
+      envmap=env,
+      integrator=args.integrator,
+      max_depth=args.max_depth + 1,
+      bsdf=args.bsdf,
     )
     ref = mitsuba_scene.render(scene)
 
@@ -182,6 +202,7 @@ def main():
     mse = float(np.mean((a - b) ** 2))
     row = {
       "scene": name,
+      "tier": args.tier,
       "integrator": args.integrator,
       "bsdf": args.bsdf,
       "res": args.res,
@@ -194,8 +215,8 @@ def main():
     sheet = np.concatenate(
       [a, b, np.repeat(np.asarray(flip_map)[..., None], 3, -1) if np.asarray(flip_map).ndim == 2 else flip_map], axis=1
     )
-    Image.fromarray((np.clip(sheet, 0, 1) * 255).astype(np.uint8)).save(args.out / f"{name}_{args.bsdf}.png")
-  with (args.out / f"metrics_{args.bsdf}_{args.integrator}.jsonl").open("w") as f:
+    Image.fromarray((np.clip(sheet, 0, 1) * 255).astype(np.uint8)).save(args.out / f"{name}_{args.tier}_{args.bsdf}.png")
+  with (args.out / f"metrics_{args.tier}_{args.bsdf}_{args.integrator}.jsonl").open("w") as f:
     for row in rows:
       f.write(json.dumps(row) + "\n")
 
