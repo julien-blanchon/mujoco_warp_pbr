@@ -13,24 +13,31 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Side-by-side stills and orbit videos of the validation scenes:
+"""Side-by-side stills and orbit videos of one scene through several renderers:
 
-  MuJoCo Warp (stock renderer) | real-time tier | path-traced tier | Mitsuba 3 reference
+  mujoco      MuJoCo's OpenGL renderer
+  mjwarp      MuJoCo Warp's ray-traced Lambert / Phong renderer
+  newton      Newton's SensorCamera (the scene imported into Newton)
+  pbr         mujoco_warp_pbr real-time tier
+  pbr_path    mujoco_warp_pbr path-traced tier
+  mitsuba     Mitsuba 3 path tracer with the renderer's BRDF (reference)
 
-MuJoCo Warp has no environment lighting: in scenes lit only by an HDR environment its panel
-uses MuJoCo's default headlight instead, so it is not black. Mitsuba path-traces the same
-geometry, materials, lights and environment with the renderer's BRDF (filament_bsdf.py).
+Scenes are benchmark scenes (`scenes.SCENES`, physical exposure, studio HDRI unless the scene is
+lights-only) or validation scenes (`validate.VALIDATION`, display-relative exposure 1). Panels a
+renderer cannot draw (e.g. Mitsuba without capsules, Newton for validation scenes) show "n/a".
+MuJoCo and MuJoCo Warp have no environment lighting: in scenes lit only by an HDRI they use
+MuJoCo's default headlight.
 
-  python benchmarks/gallery.py --scene damaged_helmet grid_env --frames 48 --out results/gallery
+  python benchmarks/gallery.py --scene damaged_helmet franka_showroom --frames 60
 """
 
 import argparse
 import copy
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-import mitsuba as mi
 import mujoco
 import mujoco_warp as mjw
 import numpy as np
@@ -39,15 +46,22 @@ from PIL import Image
 from PIL import ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from references import filament_bsdf  # noqa: E402
-from references import mitsuba_scene  # noqa: E402
+import scenes  # noqa: E402
 from validate import VALIDATION  # noqa: E402
 from validate import tone_map  # noqa: E402
 
 import mujoco_warp_pbr as mjpbr  # noqa: E402
-from mujoco_warp_pbr._src import ibl  # noqa: E402
+from mujoco_warp_pbr._src import envmap as envmap_lib  # noqa: E402
 
-_LABELS = ("MuJoCo Warp", "PBR real-time", "PBR path-traced", "Mitsuba 3 (reference)")
+LABELS = {
+  "mujoco": "MuJoCo (OpenGL)",
+  "mjwarp": "MuJoCo Warp",
+  "newton": "Newton SensorCamera",
+  "pbr": "PBR real-time",
+  "pbr_path": "PBR path-traced",
+  "mitsuba": "Mitsuba 3 (reference)",
+}
+ENVMAP = "studio_small_09_1k.hdr"
 
 
 def _orbit(mjm: mujoco.MjModel, cam: int, pos0: np.ndarray, quat0: np.ndarray, angle: float):
@@ -61,72 +75,157 @@ def _orbit(mjm: mujoco.MjModel, cam: int, pos0: np.ndarray, quat0: np.ndarray, a
   mjm.cam_quat[cam] = quat
 
 
-class _Renderers:
-  def __init__(self, mjm: mujoco.MjModel, env, res: int, path_samples: int):
-    self.mjm = mjm
-    self.env = env
-    self.res = res
-    self.cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
-    self.mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, self.mjd)
-    kwargs = dict(cam_res=(res, res), cam_active=[self.cam], render_rgb=True, render_hdr=True)
-    env_kwargs = dict(envmap=env, envmap_intensity=1.0) if env is not None else {}
-    # Validation scenes are authored in display-relative radiance: expose at 1.
-    pbr_kwargs = dict(kwargs, ev100=float(np.log2(1.0 / 1.2)), **env_kwargs)
-    self.realtime = mjpbr.create_render_context(mjm, samples_per_pixel=2, **pbr_kwargs)
-    self.path = mjpbr.create_render_context(mjm, tier=mjpbr.Tier.PATH, path_samples=path_samples, max_depth=4, **pbr_kwargs)
-    self.exposure = float(self.realtime.exposure.numpy()[0])
+def load_scene(name: str):
+  """(spec or None, model, environment map or None, display-relative exposure?) of a scene."""
+  if name in scenes.SCENES:
+    spec = scenes.SCENES[name][1]()
+    env = None
+    if name not in scenes.LIGHTS_ONLY:
+      env = envmap_lib.load_hdr(scenes.asset_dir() / "hdri" / ENVMAP)
+    return spec, spec.compile(), env, False
+  make_model, make_env = VALIDATION[name]
+  return None, make_model(), (make_env() if make_env else None), True
 
-    # Stock MuJoCo Warp, with the default headlight if nothing else lights the scene.
-    self.mjm_stock = copy.deepcopy(mjm)
-    if mjm.nlight == 0:
-      self.mjm_stock.vis.headlight.active = 1
-    self.stock = mjw.create_render_context(self.mjm_stock, **{k: v for k, v in kwargs.items() if k != "render_hdr"})
 
-  def frame(self, angle: float, pos0, quat0, spp: int) -> list[np.ndarray]:
-    for mjm in (self.mjm, self.mjm_stock):
-      _orbit(mjm, self.cam, pos0, quat0, angle)
+class Gallery:
+  def __init__(self, name: str, res: int, panels: list[str], path_samples: int, spp: int):
+    self.spec, self.mjm, self.env, unit_exposure = load_scene(name)
+    self.res, self.panels, self.spp = res, panels, spp
+    self.cam = mujoco.mj_name2id(self.mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
+    self.pos0, self.quat0 = self.mjm.cam_pos[self.cam].copy(), self.mjm.cam_quat[self.cam].copy()
+    self.mjd = mujoco.MjData(self.mjm)
     mujoco.mj_forward(self.mjm, self.mjd)
-    images = []
+    common = dict(cam_res=(res, res), cam_active=[self.cam], render_rgb=True)
+    pbr = dict(common, render_hdr=True)
+    if self.env is not None:
+      pbr.update(envmap=self.env, envmap_intensity=1.0 if unit_exposure else None)
+    if unit_exposure:
+      pbr["ev100"] = float(np.log2(1.0 / 1.2))
+    self.realtime = mjpbr.create_render_context(self.mjm, samples_per_pixel=2, **pbr)
+    self.exposure = float(self.realtime.exposure.numpy()[0])
+    self.path = None
+    if "pbr_path" in panels:
+      self.path = mjpbr.create_render_context(self.mjm, tier=mjpbr.Tier.PATH, path_samples=path_samples, **pbr)
 
-    m = mjw.put_model(self.mjm_stock)
-    d = mjw.put_data(self.mjm_stock, self.mjd)
-    mjw.refit_bvh(m, d, self.stock)
-    mjw.render(m, d, self.stock)
-    out = wp.zeros((1, self.res, self.res), dtype=wp.vec3)
-    mjw.get_rgb(self.stock, 0, out)
-    images.append(out.numpy()[0])
+    # MuJoCo-style renderers: the default headlight if nothing else lights the scene.
+    self.mjm_stock = copy.deepcopy(self.mjm)
+    if self.mjm.nlight == 0:
+      self.mjm_stock.vis.headlight.active = 1
+    self.stock = mjw.create_render_context(self.mjm_stock, **common) if "mjwarp" in panels else None
+    self.gl = None
+    if "mujoco" in panels:
+      try:
+        self.gl = mujoco.Renderer(self.mjm_stock, res, res)
+      except Exception as e:  # no OpenGL context on this machine
+        print(f"mujoco panel disabled: {e}")
+    self.newton = None
+    if "newton" in panels and self.spec is not None:
+      from references import newton_camera
 
+      self.newton = newton_camera.NewtonCamera(self.spec, self.mjm, 1, res)
+    self.mitsuba = "mitsuba" in panels
+    if self.mitsuba:
+      import mitsuba as mi
+
+      mi.set_variant("cuda_ad_rgb")
+      from references import filament_bsdf
+
+      from mujoco_warp_pbr._src import ibl
+
+      filament_bsdf.register(ibl.dfg_lut_array().numpy())
+
+  def frame(self, angle: float) -> list[np.ndarray | None]:
+    for mjm in (self.mjm, self.mjm_stock):
+      _orbit(mjm, self.cam, self.pos0, self.quat0, angle)
+    mujoco.mj_forward(self.mjm, self.mjd)
+    out = {}
+    if self.gl is not None:
+      self.gl.update_scene(self.mjd, camera=self.cam)
+      out["mujoco"] = self.gl.render().astype(np.float32) / 255.0
+    if self.stock is not None:
+      m = mjw.put_model(self.mjm_stock)
+      d = mjw.put_data(self.mjm_stock, self.mjd)
+      mjw.refit_bvh(m, d, self.stock)
+      mjw.render(m, d, self.stock)
+      rgb = wp.zeros((1, self.res, self.res), dtype=wp.vec3)
+      mjw.get_rgb(self.stock, 0, rgb)
+      out["mjwarp"] = rgb.numpy()[0]
+    if self.newton is not None:
+      rot = self.mjd.cam_xmat[self.cam].reshape(3, 3).astype(np.float32)
+      t = wp.transformf(wp.vec3f(*self.mjd.cam_xpos[self.cam]), wp.quat_from_matrix(wp.mat33f(rot.flatten())))
+      self.newton.cameras.assign(np.array([[t[i] for i in range(7)]], dtype=np.float32))
+      self.newton.render()
+      c = self.newton.color.numpy()[0]
+      out["newton"] = np.stack([(c >> s) & 0xFF for s in (0, 8, 16)], axis=-1).astype(np.float32) / 255.0
     m = mjw.put_model(self.mjm)
     d = mjw.put_data(self.mjm, self.mjd)
-    for rc in (self.realtime, self.path):
+    for name, rc in (("pbr", self.realtime), ("pbr_path", self.path)):
+      if rc is None or name not in self.panels:
+        continue
       mjw.refit_bvh(m, d, rc.base)
       mjpbr.render(m, d, rc)
-      hdr = wp.zeros((1, self.res, self.res), dtype=wp.vec3)
-      mjpbr.get_hdr(rc, 0, hdr)
-      images.append(tone_map(hdr.numpy()[0], self.exposure))
+      rgb = wp.zeros((1, self.res, self.res), dtype=wp.vec3)
+      mjpbr.get_rgb(rc, 0, rgb)
+      out[name] = rgb.numpy()[0]
+    if self.mitsuba:
+      from references import mitsuba_scene
 
-    scene = mitsuba_scene.scene_dict(
-      self.mjm, self.mjd, self.realtime, self.cam, self.res, self.res, spp, envmap=self.env, integrator="path", max_depth=5
-    )
-    images.append(tone_map(mitsuba_scene.render(scene), self.exposure))
-    return images
+      try:
+        scene = mitsuba_scene.scene_dict(
+          self.mjm,
+          self.mjd,
+          self.realtime,
+          self.cam,
+          self.res,
+          self.res,
+          self.spp,
+          envmap=self.env,
+          integrator="path",
+          max_depth=5,
+        )
+        out["mitsuba"] = tone_map(mitsuba_scene.render(scene), self.exposure)
+      except NotImplementedError as e:
+        print(f"mitsuba panel disabled: {e}")
+        self.mitsuba = False
+    return [out.get(p) for p in self.panels]
 
 
-def _sheet(images: list[np.ndarray]) -> Image.Image:
-  strip = np.concatenate([np.clip(i, 0.0, 1.0) for i in images], axis=1)
-  sheet = Image.fromarray((strip * 255 + 0.5).astype(np.uint8))
-  draw = ImageDraw.Draw(sheet)
-  width = images[0].shape[1]
-  for i, label in enumerate(_LABELS):
-    draw.rectangle((i * width, 0, i * width + 8 + 7 * len(label), 16), fill=(0, 0, 0))
-    draw.text((i * width + 4, 2), label, fill=(255, 255, 255))
-  return sheet
+def sheet(images: list[np.ndarray | None], panels: list[str], res: int) -> Image.Image:
+  tiles = [np.clip(i, 0.0, 1.0) if i is not None else np.full((res, res, 3), 0.15) for i in images]
+  img = Image.fromarray((np.concatenate(tiles, axis=1) * 255 + 0.5).astype(np.uint8))
+  draw = ImageDraw.Draw(img)
+  for i, (panel, image) in enumerate(zip(panels, images)):
+    label = LABELS[panel] + ("" if image is not None else " (n/a)")
+    draw.rectangle((i * res, 0, i * res + 8 + 7 * len(label), 16), fill=(0, 0, 0))
+    draw.text((i * res + 4, 2), label, fill=(255, 255, 255))
+  return img
+
+
+def render_scene(name: str, out: Path, res: int, frames: int, panels: list[str], path_samples: int, spp: int, fps: int):
+  """Writes <out>/<name>.png (first frame) and, with frames > 0, <out>/<name>.mp4 (orbit)."""
+  gallery = Gallery(name, res, panels, path_samples, spp)
+  out.mkdir(parents=True, exist_ok=True)
+  sheet(gallery.frame(0.0), panels, res).save(out / f"{name}.png")
+  if frames <= 0:
+    return
+  frame_dir = out / f"{name}_frames"
+  frame_dir.mkdir(exist_ok=True)
+  for f in range(frames):
+    sheet(gallery.frame(2.0 * np.pi * f / frames), panels, res).save(frame_dir / f"{f:04d}.png")
+  subprocess.run(
+    ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i", str(frame_dir / "%04d.png")]
+    + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out / f"{name}.mp4")],
+    check=True,
+  )
+  for frame in frame_dir.iterdir():
+    frame.unlink()
+  frame_dir.rmdir()
 
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--scene", nargs="*", default=["damaged_helmet", "water_bottle", "grid_env", "grid_sun"])
+  parser.add_argument("--panels", nargs="*", default=["mjwarp", "pbr", "pbr_path", "mitsuba"], choices=sorted(LABELS))
   parser.add_argument("--res", type=int, default=320)
   parser.add_argument("--frames", type=int, default=0, help="orbit video frames (0: still only)")
   parser.add_argument("--path-samples", type=int, default=256, help="samples per pixel of the path-traced tier")
@@ -134,34 +233,10 @@ def main():
   parser.add_argument("--fps", type=int, default=24)
   parser.add_argument("--out", type=Path, default=Path("results/gallery"))
   args = parser.parse_args()
-
-  mi.set_variant("cuda_ad_rgb")
-  filament_bsdf.register(ibl.dfg_lut_array().numpy())
-  args.out.mkdir(parents=True, exist_ok=True)
+  os.environ.setdefault("MUJOCO_GL", "egl")
   for name in args.scene:
-    make_model, make_env = VALIDATION[name]
-    mjm = make_model()
-    renderers = _Renderers(mjm, make_env() if make_env else None, args.res, args.path_samples)
-    pos0, quat0 = mjm.cam_pos[renderers.cam].copy(), mjm.cam_quat[renderers.cam].copy()
-    _sheet(renderers.frame(0.0, pos0, quat0, args.spp)).save(args.out / f"{name}.png")
-    print(args.out / f"{name}.png")
-    if args.frames <= 0:
-      continue
-    frame_dir = args.out / f"{name}_frames"
-    frame_dir.mkdir(exist_ok=True)
-    for f in range(args.frames):
-      angle = 2.0 * np.pi * f / args.frames
-      _sheet(renderers.frame(angle, pos0, quat0, args.spp)).save(frame_dir / f"{f:04d}.png")
-    video = args.out / f"{name}.mp4"
-    subprocess.run(
-      ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(args.fps), "-i", str(frame_dir / "%04d.png")]
-      + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(video)],
-      check=True,
-    )
-    for frame in frame_dir.iterdir():
-      frame.unlink()
-    frame_dir.rmdir()
-    print(video)
+    render_scene(name, args.out, args.res, args.frames, args.panels, args.path_samples, args.spp, args.fps)
+    print(args.out / name)
 
 
 if __name__ == "__main__":

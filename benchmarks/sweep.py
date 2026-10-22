@@ -24,6 +24,8 @@ Presets:
   renderers: every renderer in two regimes: a single scene (1 world, 128² and 256²) and batches
            (1024 / 4096 worlds at 64², 1024 at 128²). MuJoCo's OpenGL renderer and Mitsuba render
            sequentially, so their batch figures are per-image throughput.
+  tune:    kernel options per GPU (register cap, block size, ordered traversal) on the score
+           scenes at 4096 worlds, 64², with camera jitter.
   scaling: frames/s against batch size (1 to 32768 worlds at 64², 1 to 8192 at 128²) for
            mujoco_warp_pbr and mujoco_warp (shadows on).
 
@@ -71,6 +73,15 @@ def configurations(preset: str) -> list[list[str]]:
         configs.append([*size, "--renderer", "pbr", *_envmap_option()])
         configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
         configs.append([*size, "--renderer", "newton"])
+  elif preset == "tune":
+    for scene in SCORE_SCENES:
+      for regs in (0, 96, 128):
+        for block in (64, 256):
+          for ordered in ("true", "false"):
+            options = ["--set", f"max_registers={regs}", "--set", f"block_dim={block}", "--set", f"ordered_traversal={ordered}"]
+            configs.append(
+              ["--scene", scene, "--nworld", "4096", "--res", "64", "--jitter-camera", *options, *_envmap_option()]
+            )
   elif preset == "renderers":
     sizes = [(1, 128), (1, 256), (1024, 64), (4096, 64), (1024, 128)]
     for scene in ["material_grid", "primitives", "damaged_helmet"]:
@@ -102,6 +113,22 @@ def configurations(preset: str) -> list[list[str]]:
   return configs
 
 
+def run_bench(config: list[str]) -> dict | None:
+  """Runs one bench.py configuration in a fresh process (waiting while other users occupy the
+  GPU) and returns its JSON row, or None on failure."""
+  cmd = [sys.executable, str(HERE / "bench.py"), *config]
+  for _ in range(BUSY_RETRIES):
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if "GPU in use" not in result.stderr:
+      break
+    time.sleep(BUSY_WAIT_S)
+  lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
+  if result.returncode != 0 or not lines:
+    print("FAILED:", " ".join(config), result.stderr.strip().splitlines()[-1:] if result.stderr else "", flush=True)
+    return None
+  return json.loads(lines[-1])
+
+
 def score(rows: list[dict]) -> float:
   """Geometric mean of camera-frames/s."""
   return math.exp(sum(math.log(r["frames_per_s"]) for r in rows) / len(rows))
@@ -109,7 +136,7 @@ def score(rows: list[dict]) -> float:
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--preset", choices=["score", "compare", "renderers", "scaling"], default="score")
+  parser.add_argument("--preset", choices=["score", "compare", "renderers", "scaling", "tune"], default="score")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--label", default="", help="tag stored with every row (e.g. an experiment name)")
   parser.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="arguments appended to every bench.py call")
@@ -118,17 +145,9 @@ def main():
   args.out.parent.mkdir(parents=True, exist_ok=True)
   rows = []
   for config in configurations(args.preset):
-    cmd = [sys.executable, str(HERE / "bench.py"), *config, *args.extra]
-    for _ in range(BUSY_RETRIES):
-      result = subprocess.run(cmd, capture_output=True, text=True)
-      if "GPU in use" not in result.stderr:
-        break
-      time.sleep(BUSY_WAIT_S)
-    lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
-    if result.returncode != 0 or not lines:
-      print("FAILED:", " ".join(config), result.stderr.strip().splitlines()[-1:] if result.stderr else "")
+    row = run_bench([*config, *args.extra])
+    if row is None:
       continue
-    row = json.loads(lines[-1])
     row["label"] = args.label
     rows.append(row)
     with args.out.open("a") as f:
