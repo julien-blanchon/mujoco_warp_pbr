@@ -204,6 +204,11 @@ class Gallery:
         self.mitsuba = False
     return [out.get(p) for p in self.panels]
 
+  def close(self):
+    if self.rtx is not None:
+      self.rtx.close()
+      self.rtx = None
+
 
 def sheet(images: list[np.ndarray | None], panels: list[str], res: int) -> Image.Image:
   tiles = [np.clip(i, 0.0, 1.0) if i is not None else np.full((res, res, 3), 0.15) for i in images]
@@ -219,6 +224,13 @@ def sheet(images: list[np.ndarray | None], panels: list[str], res: int) -> Image
 def render_scene(name: str, out: Path, res: int, frames: int, panels: list[str], path_samples: int, spp: int, fps: int):
   """Writes <out>/<name>.png (first frame) and, with frames > 0, <out>/<name>.mp4 (orbit)."""
   gallery = Gallery(name, res, panels, path_samples, spp)
+  try:
+    _render(gallery, name, out, res, frames, panels, fps)
+  finally:
+    gallery.close()
+
+
+def _render(gallery: Gallery, name: str, out: Path, res: int, frames: int, panels: list[str], fps: int):
   out.mkdir(parents=True, exist_ok=True)
   sheet(gallery.frame(0.0), panels, res).save(out / f"{name}.png")
   if frames <= 0:

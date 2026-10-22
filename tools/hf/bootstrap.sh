@@ -21,4 +21,10 @@ mkdir -p /work
 cp -r /data/code /work/
 cd /work/code
 uv sync -q --python 3.12 --all-packages --extra dev --extra bench
+# Newton's ViewerRTX (Omniverse RTX) on GPUs with RT cores. Newton 1.7's viewer needs this
+# ovrtx / ovstage pair; libOpenGL is needed by ovrtx's USD resolver plugin.
+if nvidia-smi --query-gpu=name --format=csv,noheader | grep -qiE "rtx|l40|l4|a10|t4"; then
+  apt-get install -y -qq --no-install-recommends libopengl0 >/dev/null 2>&1 || true
+  uv pip install -q --extra-index-url https://pypi.nvidia.com "ovrtx==0.5.1.*" "ovstage==0.2.1.*" usd-core || true
+fi
 echo "bootstrap done: $(uv run python -c 'import warp as wp; wp.init(); print(wp.get_device().name)' 2>/dev/null | tail -1)"

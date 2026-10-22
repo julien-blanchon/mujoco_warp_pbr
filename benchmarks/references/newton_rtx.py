@@ -56,6 +56,10 @@ class NewtonRtxCamera:
     self.viewer.end_frame()
     self.frame = self.viewer.get_frame()
 
+  def close(self):
+    """Releases the RTX renderer (one ViewerRTX at a time per process)."""
+    self.viewer.close()
+
   def image(self) -> np.ndarray:
     """Last frame as float RGB in [0, 1], (res, res, 3)."""
     return self.frame.numpy()[..., :3].astype(np.float32) / 255.0
