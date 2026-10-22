@@ -158,8 +158,14 @@ def test_depth_and_segmentation_match_mujoco_warp(scene, tier, render_rgb, order
         <geom type="sphere" pos="0 0 0.4" size="0.3"/>
         <geom type="box" pos="0.6 0.2 0.3" size="0.2 0.2 0.2"/>
         <geom type="capsule" pos="-0.6 0 0.3" size="0.1 0.2"/>
+        <geom type="mesh" mesh="ico" pos="0.1 -0.5 0.35" euler="20 30 10"/>
         <camera name="cam" pos="0 -2.5 1.2" xyaxes="1 0 0 0 0.45 0.9"/>
       </worldbody>
+      <asset>
+        <mesh name="ico" scale="0.2 0.2 0.2"
+          vertex="0 1 1.618  0 -1 1.618  0 1 -1.618  0 -1 -1.618  1 1.618 0  -1 1.618 0
+                  1 -1.618 0  -1 -1.618 0  1.618 0 1  -1.618 0 1  1.618 0 -1  -1.618 0 -1"/>
+      </asset>
     </mujoco>
   """
   s = scene(
