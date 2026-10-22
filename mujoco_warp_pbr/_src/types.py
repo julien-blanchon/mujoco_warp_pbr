@@ -148,16 +148,29 @@ class PbrRenderContext:
     unroll_lights: unroll the per-light loop at compile time (else a runtime loop)
     render_order: RenderOrder thread-to-pixel assignment
     block_dim: threads per block of the render kernels (None: MuJoCo Warp's render block size)
-    max_registers: register cap per thread for the render kernels (None: compiler default)
+    max_registers: register cap per thread for the render kernels (0: compiler default)
     max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
       are unrolled)
     tier: Tier
     path_samples: path-traced samples per pixel
     max_depth: maximum path length (bounces)
     rr_depth: bounce after which Russian roulette applies
+    denoise: whether the path-traced image is denoised
+    denoise_iterations: à-trous filter passes
+    denoise_sigma_color: luminance tolerance in standard deviations of the local noise
+    denoise_sigma_normal: exponent of the normal similarity weight
+    denoise_sigma_depth: relative depth tolerance per pixel of filter step
+    denoise_sigma_albedo: albedo difference tolerance
+    aov_albedo: first-hit albedo, the denoiser's demodulation         (nworld, npixel)
+    aov_normal: first-hit shading normal (zero for the background)     (nworld, npixel)
+    aov_depth: first-hit camera depth                                  (nworld, npixel)
+    aov_emission: first-hit emitted radiance, exposed                  (nworld, npixel)
+    aov_variance: variance of the pixel's mean exposed luminance       (nworld, npixel)
+    denoise_buffers: ping-pong filter buffers                          (nworld, npixel)
     render_hdr: whether linear HDR (pre-exposure, pre-tone-mapping) is written
     hdr_data: linear HDR radiance                                      (nworld, npixel)
     _megakernel: cached specialised render kernel
+    _denoise_finish: cached remodulation / display kernel
   """
 
   base: RenderContext
@@ -208,6 +221,19 @@ class PbrRenderContext:
   path_samples: int
   max_depth: int
   rr_depth: int
+  denoise: bool
+  denoise_iterations: int
+  denoise_sigma_color: float
+  denoise_sigma_normal: float
+  denoise_sigma_depth: float
+  denoise_sigma_albedo: float
+  aov_albedo: wp.array2d[wp.vec3h]
+  aov_normal: wp.array2d[wp.vec3h]
+  aov_depth: wp.array2d[float]
+  aov_emission: wp.array2d[wp.vec3]
+  aov_variance: wp.array2d[float]
+  denoise_buffers: tuple
   render_hdr: bool
   hdr_data: wp.array2d[wp.vec3]
   _megakernel: Any = None
+  _denoise_finish: Any = None

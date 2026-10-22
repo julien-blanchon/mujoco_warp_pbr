@@ -11,7 +11,8 @@ fields.
   in-kernel supersampling, MuJoCo reflectance (mirror ray) and alpha blending. Deterministic and
   noise-free.
 - **Path-traced tier**: unidirectional path tracing with next-event estimation and multiple
-  importance sampling (lights, environment, BSDF). Same BRDF, converges to Mitsuba 3.
+  importance sampling (lights, environment, BSDF). Same BRDF, converges to Mitsuba 3. Optional
+  edge-avoiding à-trous denoiser (`denoise=True`) guided by first-hit albedo, normal and depth.
 - Every material, light and environment parameter can vary per world (domain randomisation)
   without recompiling. Depth and segmentation match MuJoCo Warp's renderer.
 
@@ -84,7 +85,8 @@ Newton's camera sensor, e.g. ~130k frames/s on the DamagedHelmet scene. See
 `results/m5_baseline.md` and later reports for tables, and `results/m6_pathtrace.md` for the
 path-traced tier.
 
-Tuning knobs: `render_order` (`RenderOrder.TILED` default; `RenderOrder.WORLD` is up to 2.7×
+Tuning knobs: `max_registers` (96 by default, tuned on Hopper; 0 leaves it to the compiler),
+`render_order` (`RenderOrder.TILED` default; `RenderOrder.WORLD` is up to 2.7×
 faster when all worlds render nearly the same image, e.g. fixed cameras), `block_dim`,
 `samples_per_pixel`, `shadow_samples`, and disabling unused features (`use_shadows`,
 `use_textures`, `specular_aa`, `enable_reflections`).

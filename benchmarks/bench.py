@@ -93,13 +93,13 @@ def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
   extra = dict(kv.split("=", 1) for kv in args.set)
   extra = {k: _parse_value(v) for k, v in extra.items()}
   if args.renderer == "pbr":
-    rc = mjpbr.create_render_context(mjm, **common, **extra)
+    rc = mjpbr.create_render_context(mjm, **(common | extra))
     base = rc.base
 
     def render():
       mjpbr.render(m, d, rc)
   else:
-    rc = mjw.create_render_context(mjm, **common, **extra)
+    rc = mjw.create_render_context(mjm, **(common | extra))
     base = rc
 
     def render():

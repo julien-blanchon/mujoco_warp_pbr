@@ -38,6 +38,7 @@ from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import ObjType
 
 from mujoco_warp_pbr._src import brdf
+from mujoco_warp_pbr._src import denoise
 from mujoco_warp_pbr._src import envmap
 from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import kernel_inputs
@@ -69,6 +70,17 @@ def _rand(seed: int, sample: int, depth: int, slot: int) -> float:
   return wp.randf(wp.rand_init(seed, (sample * 64 + depth) * wp.static(_SLOTS) + slot))
 
 
+@wp.struct
+class Primary:
+  """First surface seen from the camera: segmentation / depth and the denoiser's features."""
+
+  hit: trace.Hit
+  albedo: wp.vec3
+  normal: wp.vec3
+  # Emitted radiance, kept out of the filtered (noisy) part of the image.
+  emission: wp.vec3
+
+
 @wp.func
 def _power_heuristic(a: float, b: float) -> float:
   a2 = a * a
@@ -96,6 +108,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   zfar = base.zfar
   total_rays = base.total_rays
   render_hdr = rc.render_hdr
+  use_denoiser = rc.denoise
   has_env = rc.has_env
   env_background = rc.env_background
   has_transparency = rc.has_transparency
@@ -266,13 +279,17 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     rr_depth: int,
     seed: int,
     sample: int,
-  ) -> tuple[wp.vec3, trace.Hit]:
+  ) -> tuple[wp.vec3, Primary]:
+    """Radiance of one path and its first surface."""
     exposure = env.exposure[worldid % env.exposure.shape[0]]
     ambient = env.ambient_radiance[worldid % env.ambient_radiance.shape[0]]
     radiance = wp.vec3(0.0)
     beta = wp.vec3(1.0)
-    first = trace.Hit()
-    first.geom_id = -1
+    first = Primary()
+    first.hit.geom_id = -1
+    first.albedo = wp.vec3(1.0)
+    first.normal = wp.vec3(0.0)
+    first.emission = wp.vec3(0.0)
     camera_ray = bool(True)
     delta_bounce = bool(True)
     pdf_prev = float(0.0)
@@ -284,7 +301,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     while depth <= max_depth:
       hit = trace_closest(geo, worldid, origin, direction, max_dist)
       if camera_ray and passes == 0:
-        first = hit
+        first.hit = hit
       if hit.geom_id == -1:
         if camera_ray:
           if wp.static(env_background):
@@ -319,6 +336,10 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       if depth == max_depth:
         break
       max_dist = float(MJ_MAXVAL)
+      if camera_ray:
+        first.albedo = surface.base_color
+        first.normal = normal
+        first.emission = surface.emissive / exposure
       camera_ray = False
 
       if wp.static(has_reflection):
@@ -344,6 +365,8 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       spec_albedo = brdf.specular_albedo(f0, dfg)
       diffuse_color = brdf.coupled_diffuse(surface.base_color, surface.metallic, spec_albedo)
       p_spec = brdf.specular_probability(diffuse_color, wp.cw_mul(spec_albedo, energy_comp))
+      if depth == 0:
+        first.albedo = diffuse_color + wp.cw_mul(spec_albedo, energy_comp)
 
       radiance += wp.cw_mul(
         beta,
@@ -403,6 +426,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     rr_depth: int,
     seed: int,
     out: Outputs,
+    feat: denoise.Features,
   ):
     if wp.static(world_order):
       rayid, worldid = wp.tid()
@@ -446,6 +470,12 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     pixel_seed = seed + worldid * wp.static(total_rays) + rayid
 
     hdr = wp.vec3(0.0)
+    albedo_sum = wp.vec3(0.0)
+    normal_sum = wp.vec3(0.0)
+    emission_sum = wp.vec3(0.0)
+    first_depth = float(0.0)
+    lum_sq_sum = float(0.0)
+    exposure = env.exposure[worldid % env.exposure.shape[0]]
     for s in range(nsample):
       # Sample 0 goes through the pixel centre (depth / segmentation match the real-time tier).
       sx = wp.static(_SUBPIXEL // 2)
@@ -469,7 +499,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       max_dist = float(MJ_MAXVAL)
       if wp.static(zfar > 0.0):
         max_dist = wp.static(zfar) / wp.max(-ray_dir_cam[2], 1.0e-6)
-      radiance, hit = trace_path(
+      radiance, first = trace_path(
         geo,
         mats,
         lit,
@@ -486,6 +516,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
         pixel_seed,
         s,
       )
+      hit = first.hit
       if s == 0:
         if want_seg and hit.geom_id != -1:
           if hit.geom_id == -2:
@@ -499,13 +530,33 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
           out.depth[worldid, out.depth_adr[camid] + pixelid] = depth
         if not want_rgb:
           return
+        if hit.geom_id != -1:
+          first_depth = hit.dist * -ray_dir_cam[2]
       hdr += radiance
+      albedo_sum += first.albedo
+      normal_sum += first.normal
+      emission_sum += first.emission
+      if wp.static(use_denoiser):
+        lum = (0.2126 * radiance[0] + 0.7152 * radiance[1] + 0.0722 * radiance[2]) * exposure
+        lum_sq_sum += lum * lum
 
     hdr = hdr / float(nsample)
     adr = out.rgb_adr[camid] + pixelid
+    if wp.static(use_denoiser):
+      # The denoiser writes the display RGB from the noisy HDR and these first-hit features.
+      out.hdr[worldid, adr] = hdr
+      feat.albedo[worldid, adr] = wp.vec3h(albedo_sum / float(nsample))
+      feat.emission[worldid, adr] = emission_sum * (exposure / float(nsample))
+      if wp.length_sq(normal_sum) > 0.0:
+        normal_sum = wp.normalize(normal_sum)
+      feat.normal[worldid, adr] = wp.vec3h(normal_sum)
+      feat.depth[worldid, adr] = first_depth
+      mean_lum = (0.2126 * hdr[0] + 0.7152 * hdr[1] + 0.0722 * hdr[2]) * exposure
+      feat.variance[worldid, adr] = wp.max(lum_sq_sum / float(nsample) - mean_lum * mean_lum, 0.0) / float(nsample)
+      return
     if wp.static(render_hdr):
       out.hdr[worldid, adr] = hdr
-    c = display_transform(hdr * env.exposure[worldid % env.exposure.shape[0]])
+    c = display_transform(hdr * exposure)
     out.rgb[worldid, adr] = pack_rgba_to_uint32(
       srgb_oetf(c[0]) * 255.0 + 0.5, srgb_oetf(c[1]) * 255.0 + 0.5, srgb_oetf(c[2]) * 255.0 + 0.5, 255.0
     )
@@ -531,6 +582,8 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int):
       rc.rr_depth,
       int(seed),
     ],
-    outputs=[kernel_inputs.outputs(rc)],
+    outputs=[kernel_inputs.outputs(rc), denoise.features(rc)],
     block_dim=rc.block_dim or m.block_dim.render,
   )
+  if rc.denoise:
+    denoise.denoise(rc, d.nworld)
