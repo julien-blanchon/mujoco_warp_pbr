@@ -28,6 +28,7 @@ from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import lights
 from mujoco_warp_pbr._src import material
 from mujoco_warp_pbr._src import texture
+from mujoco_warp_pbr._src import traverse
 from mujoco_warp_pbr._src.types import LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import RenderOrder
@@ -82,6 +83,7 @@ def create_render_context(
   block_dim: int | None = None,
   max_registers: int | None = None,
   mesh_bvh_constructor: str = "cubql",
+  ordered_traversal: bool | None = None,
   tier: int = Tier.REALTIME,
   path_samples: int = 64,
   max_depth: int = 4,
@@ -137,6 +139,11 @@ def create_render_context(
     max_registers: Register cap per thread for the render kernels. None picks 96, 5-12% faster
       than the compiler's choice on Hopper for both primitive and mesh scenes; 0 leaves the
       register count to the compiler.
+    ordered_traversal: Traverse the scene BVH nearest child first (`traverse.py`; needs
+      Warp >= 1.18; scenes with flex always use MuJoCo Warp's traversal). None picks it for the
+      real-time tier with RGB output, where it is up to 24% faster (shading kernels trace
+      incoherent shadow and mirror rays); depth / segmentation-only and path-traced kernels are
+      faster with MuJoCo Warp's traversal.
     mesh_bvh_constructor: Warp BVH builder for meshes ("cubql" as MuJoCo Warp, "sah", "lbvh").
     tier: Tier.REALTIME (direct lighting + split-sum IBL) or Tier.PATH (path tracing).
     path_samples: Path-traced samples per pixel (random sub-pixel positions).
@@ -283,6 +290,9 @@ def create_render_context(
 
   if max_registers is None:
     max_registers = 96
+  if ordered_traversal is None:
+    ordered_traversal = tier == Tier.REALTIME and bool(base.render_rgb.numpy().any())
+  ordered_traversal = ordered_traversal and traverse.AVAILABLE and base.bvh_nflexgeom == 0
 
   ri = base.rgb_data.shape[1]
   return PbrRenderContext(
@@ -329,6 +339,7 @@ def create_render_context(
     render_order=int(render_order),
     block_dim=block_dim,
     max_registers=max_registers,
+    ordered_traversal=ordered_traversal,
     max_unroll=6,
     tier=int(tier),
     path_samples=path_samples,

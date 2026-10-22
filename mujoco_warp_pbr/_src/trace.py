@@ -29,6 +29,8 @@ from mujoco_warp import Model
 from mujoco_warp import RenderContext
 from mujoco_warp._src.render import _make_cast_ray
 
+from mujoco_warp_pbr._src import traverse
+
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
@@ -117,15 +119,19 @@ def geometry(m: Model, d: Data, base: RenderContext) -> Geometry:
   return geo
 
 
-def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool) -> Tuple[wp.Function, wp.Function]:
+def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: bool = False) -> Tuple[wp.Function, wp.Function]:
   """Returns (trace_closest, trace_any) specialised on the geom types present.
+
+  ordered selects the nearest-first scene traversal of `traverse.py` (kernels inlining it need
+  `traverse.BUILD_OPTIONS`); otherwise MuJoCo Warp's traversal is used.
 
   trace_closest(geo, worldid, origin, direction, max_dist) -> Hit
   trace_any(geo, worldid, origin, direction, max_dist) -> bool, True if anything is hit before
   max_dist.
   """
-  cast_closest = _make_cast_ray(geom_ray_types, first_hit=False)
-  cast_any = _make_cast_ray(geom_ray_types, first_hit=True)
+  make_cast = traverse.make_ordered_cast if ordered else _make_cast_ray
+  cast_closest = make_cast(geom_ray_types, first_hit=False)
+  cast_any = make_cast(geom_ray_types, first_hit=True)
 
   @wp.func
   def trace_closest(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> Hit:

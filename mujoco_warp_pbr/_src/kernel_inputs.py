@@ -21,6 +21,7 @@ from mujoco_warp import Model
 from mujoco_warp._src.types import ObjType
 
 from mujoco_warp_pbr._src import trace
+from mujoco_warp_pbr._src import traverse
 from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import RenderOrder
 
@@ -105,6 +106,14 @@ def write_geometry(
 @wp.func
 def rand2(seed: int, index: int) -> wp.vec2:
   return wp.vec2(wp.randf(wp.rand_init(seed, 2 * index)), wp.randf(wp.rand_init(seed, 2 * index + 1)))
+
+
+def module_options(rc: PbrRenderContext) -> dict:
+  """Warp module options of the render megakernels."""
+  options = {"fast_math": rc.base.use_fast_math, "max_unroll": rc.max_unroll}
+  if rc.ordered_traversal:
+    options["extra_build_options"] = traverse.BUILD_OPTIONS
+  return options
 
 
 def cameras(m: Model, d: Data, rc: PbrRenderContext) -> Cameras:

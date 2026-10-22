@@ -21,6 +21,9 @@ Presets:
            jitter (identical worlds would overstate ray coherence). The score is the geometric
            mean of camera-frames/s.
   compare: mujoco_warp_pbr vs mujoco_warp (shadows on) vs Newton on the same scenes and sizes.
+  renderers: every renderer in two regimes: a single scene (1 world, 128² and 256²) and batches
+           (1024 / 4096 worlds at 64², 1024 at 128²). MuJoCo's OpenGL renderer and Mitsuba render
+           sequentially, so their batch figures are per-image throughput.
   scaling: frames/s against batch size (1 to 32768 worlds at 64², 1 to 8192 at 128²) for
            mujoco_warp_pbr and mujoco_warp (shadows on).
 
@@ -68,6 +71,22 @@ def configurations(preset: str) -> list[list[str]]:
         configs.append([*size, "--renderer", "pbr", *_envmap_option()])
         configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
         configs.append([*size, "--renderer", "newton"])
+  elif preset == "renderers":
+    sizes = [(1, 128), (1, 256), (1024, 64), (4096, 64), (1024, 128)]
+    for scene in ["material_grid", "primitives", "damaged_helmet"]:
+      for nworld, res in sizes:
+        size = ["--scene", scene, "--nworld", str(nworld), "--res", str(res)]
+        configs.append([*size, "--renderer", "pbr", *_envmap_option()])
+        configs.append([*size, "--renderer", "pbr", "--set", "tier=1", "--set", "path_samples=16", *_envmap_option()])
+        configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
+        configs.append([*size, "--renderer", "newton"])
+        if nworld == 4096:
+          continue  # sequential renderers: same per-image rate as 1024 worlds
+        configs.append([*size, "--renderer", "mujoco"])
+        # Mitsuba's exporter has no capsules / cylinders.
+        if scene != "primitives":
+          for spp in (16, 256):
+            configs.append([*size, "--renderer", "mitsuba", "--mitsuba-spp", str(spp), *_envmap_option()])
   elif preset == "scaling":
     sizes = [(n, 64) for n in (1, 4, 16, 64, 256, 1024, 4096, 16384, 32768)]
     sizes += [(n, 128) for n in (1, 16, 256, 1024, 4096, 8192)]
@@ -88,7 +107,7 @@ def score(rows: list[dict]) -> float:
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--preset", choices=["score", "compare", "scaling"], default="score")
+  parser.add_argument("--preset", choices=["score", "compare", "renderers", "scaling"], default="score")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--label", default="", help="tag stored with every row (e.g. an experiment name)")
   parser.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="arguments appended to every bench.py call")

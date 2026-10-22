@@ -149,6 +149,7 @@ class PbrRenderContext:
     render_order: RenderOrder thread-to-pixel assignment
     block_dim: threads per block of the render kernels (None: MuJoCo Warp's render block size)
     max_registers: register cap per thread for the render kernels (0: compiler default)
+    ordered_traversal: nearest-first scene BVH traversal (traverse.py) instead of MuJoCo Warp's
     max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
       are unrolled)
     tier: Tier
@@ -216,6 +217,7 @@ class PbrRenderContext:
   render_order: int
   block_dim: Any
   max_registers: Any
+  ordered_traversal: bool
   max_unroll: int
   tier: int
   path_samples: int

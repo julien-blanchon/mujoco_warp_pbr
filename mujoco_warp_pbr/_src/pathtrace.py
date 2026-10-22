@@ -91,7 +91,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   """Specialises the path-tracing kernel on the scene and context configuration."""
   base = rc.base
   geom_types = base.geom_ray_types
-  trace_closest, trace_any = trace.make_trace(geom_types, base.enable_backface_culling)
+  trace_closest, trace_any = trace.make_trace(geom_types, base.enable_backface_culling, rc.ordered_traversal)
   eval_light = lights.make_eval_light(rc.light_model, base.has_spot_lights)
   eval_surface = material.make_eval_surface(geom_types, rc.features, base.enable_vertex_normals)
   display_transform = make_display_transform(rc.tone_mapper)
@@ -415,7 +415,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     module="unique",
     enable_backward=False,
     grid_stride=False,
-    module_options={"fast_math": base.use_fast_math, "max_unroll": rc.max_unroll},
+    module_options=kernel_inputs.module_options(rc),
   )
   def path_megakernel(
     geo: Geometry,

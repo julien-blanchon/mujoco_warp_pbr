@@ -20,9 +20,12 @@ as the median over repeats. Physics is not stepped. Prints one JSON line per con
 optionally appends it to a JSONL file.
 
 Usage:
-  python benchmarks/bench.py --scene material_grid --nworld 1024 --res 64 [--renderer pbr|mjwarp]
-    [--refit] [--repeats 5] [--iters 20] [--out results.jsonl] [--save-image img.png]
-    [--set KEY=VALUE]
+  python benchmarks/bench.py --scene material_grid --nworld 1024 --res 64
+    [--renderer pbr|mjwarp|newton|mujoco|mitsuba] [--refit] [--repeats 5] [--iters 20]
+    [--out results.jsonl] [--save-image img.png] [--set KEY=VALUE]
+
+MuJoCo's OpenGL renderer and Mitsuba render one image at a time. Their throughput does not depend
+on the batch size, so they time a loop over min(nworld, --sequential-frames) images.
 """
 
 import argparse
@@ -65,20 +68,58 @@ def _parse_value(text: str):
     return text
 
 
+def sequential_frames(args) -> int:
+  return min(args.nworld, args.sequential_frames)
+
+
+def build_mitsuba(args, mjm: mujoco.MjModel, extra: dict):
+  """Mitsuba 3 (cuda_ad_rgb) with the renderer's BRDF: one image per call."""
+  import drjit as dr
+  import mitsuba as mi
+
+  mi.set_variant("cuda_ad_rgb")
+  from references import filament_bsdf
+  from references import mitsuba_scene
+
+  from mujoco_warp_pbr._src import envmap as envmap_lib
+  from mujoco_warp_pbr._src import ibl
+
+  filament_bsdf.register(ibl.dfg_lut_array().numpy())
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+  cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
+  env = envmap_lib.load_hdr(extra["envmap"]) if "envmap" in extra else None
+  rc = mjpbr.create_render_context(mjm, cam_res=(args.res, args.res), cam_active=[cam], render_rgb=True)
+  scene = mi.load_dict(
+    mitsuba_scene.scene_dict(
+      mjm, mjd, rc, cam, args.res, args.res, args.mitsuba_spp, envmap=env, integrator=args.mitsuba_integrator, max_depth=5
+    )
+  )
+
+  def render():
+    for _ in range(sequential_frames(args)):
+      dr.eval(mi.render(scene))
+    dr.sync_thread()
+
+  return None, None, scene, None, render
+
+
 def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
   if args.renderer == "mujoco":
-    # MuJoCo's OpenGL renderer draws one image at a time: time a loop over the worlds.
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     renderer = mujoco.Renderer(mjm, args.res, args.res)
     cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
 
     def render_cpu():
-      for _ in range(args.nworld):
+      for _ in range(sequential_frames(args)):
         renderer.update_scene(mjd, camera=cam)
         renderer.render()
 
     return None, None, renderer, None, render_cpu
+  if args.renderer == "mitsuba":
+    extra = {k: _parse_value(v) for k, v in (kv.split("=", 1) for kv in args.set)}
+    return build_mitsuba(args, mjm, extra)
   if args.renderer == "newton":
     from references import newton_camera
 
@@ -180,7 +221,7 @@ def time_graph(step, iters: int, repeats: int) -> list[float]:
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--scene", default="material_grid", choices=sorted(scenes.SCENES))
-  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "mujoco"])
+  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "mujoco", "mitsuba"])
   parser.add_argument("--nworld", type=int, default=1024)
   parser.add_argument("--res", type=int, default=64)
   parser.add_argument("--depth", action="store_true")
@@ -193,6 +234,9 @@ def main():
   parser.add_argument("--jitter-scale", type=float, default=1.0, help="scale of the camera jitter (1: 3 cm, 2 deg)")
   parser.add_argument("--out", type=Path)
   parser.add_argument("--save-image", type=Path)
+  parser.add_argument("--sequential-frames", type=int, default=64, help="images per step for mujoco / mitsuba")
+  parser.add_argument("--mitsuba-spp", type=int, default=16)
+  parser.add_argument("--mitsuba-integrator", default="path", choices=["direct", "path"])
   parser.add_argument("--allow-busy", action="store_true", help="run even if the GPU is in use by other processes")
   args = parser.parse_args()
 
@@ -214,12 +258,13 @@ def main():
   step()
   wp.synchronize()
   jit = time.perf_counter() - jit_start
-  if args.renderer == "mujoco":
+  sequential = args.renderer in ("mujoco", "mitsuba")
+  if sequential:
     times = time_loop(step, args.iters, args.repeats)
   else:
     times = time_graph(step, args.iters, args.repeats)
   median = float(np.median(times))
-  frames = args.nworld  # one camera
+  frames = sequential_frames(args) if sequential else args.nworld  # one camera
   row = {
     "scene": args.scene,
     "group": group,
@@ -231,6 +276,7 @@ def main():
     "jitter_camera": args.jitter_camera,
     "jitter_scale": args.jitter_scale,
     "options": args.set,
+    "sequential": sequential,
     "ms_per_frame_batch": median * 1e3,
     "frames_per_s": frames / median,
     "gpx_per_s": frames * args.res * args.res / median / 1e9,
