@@ -44,6 +44,9 @@ name = "mujoco"
 url = "https://py.mujoco.org/"
 explicit = true
 
+[tool.uv.workspace]
+members = ["newton-pbr"]
+
 [tool.uv.sources]
 warp-lang = {index = "nvidia"}
 mujoco = {index = "mujoco"}
@@ -61,6 +64,7 @@ ignore = ["D100", "D103"]
 
 [tool.ruff.lint.isort]
 force-single-line = true
+known-first-party = ["mujoco_warp_pbr", "newton_pbr"]
 single-line-exclusions = ["typing"]
 
 [tool.ruff.lint.pycodestyle]
@@ -81,7 +85,7 @@ docstring-code-format = true
 docstring-code-line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "newton-pbr/tests"]
 
 [tool.setuptools.packages.find]
 include = ["mujoco_warp_pbr*"]

@@ -79,7 +79,11 @@ def compile_ptx(pymodule, out_dir):
   import shutil
 
   shutil.rmtree(out_dir, ignore_errors=True)
-  paths = wp.compile_aot_module(pymodule, device="cuda:0", module_dir=str(out_dir), use_ptx=True, strip_hash=True)
+  # OPTIX_PTX_ARCH targets an older PTX ISA / arch: an OptiX runtime older than Warp's NVRTC rejects
+  # newer PTX ("Target architecture invalid"), e.g. driver 580 (OptiX 9.0) with Warp's CUDA 13 NVRTC.
+  arch = os.environ.get("OPTIX_PTX_ARCH")
+  target = {"arch": int(arch)} if arch else {"device": "cuda:0"}
+  paths = wp.compile_aot_module(pymodule, module_dir=str(out_dir), use_ptx=True, strip_hash=True, **target)
   return paths
 
 

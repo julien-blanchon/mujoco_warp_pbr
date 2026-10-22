@@ -7,6 +7,12 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+members = [
+    "mujoco-warp-pbr",
+    "newton-pbr",
+]
+
 [[package]]
 name = "absl-py"
 version = "2.5.1"
@@ -480,6 +486,21 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/02/6b7dfd9310ddd013650b12171271cf97551e10008fd1e26d2f1697d62407/newton-1.7.0-py3-none-any.whl", hash = "sha256:a58b5ca4550a81d04bb9607c300318a0f87edddd4632fe58765224ee1fd18b05", size = 6552044, upload-time = "2026-10-14T22:37:28.631Z" },
+]
+
+[[package]]
+name = "newton-pbr"
+version = "0.0.1"
+source = { editable = "newton-pbr" }
+dependencies = [
+    { name = "mujoco-warp-pbr" },
+    { name = "newton" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mujoco-warp-pbr", editable = "." },
+    { name = "newton", specifier = ">=1.7" },
 ]
 
 [[package]]

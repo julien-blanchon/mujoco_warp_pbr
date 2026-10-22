@@ -92,6 +92,23 @@ idle GPU.
 Without RT cores OptiX is no faster on a bare mesh. With instancing its two-level traversal beats
 the MuJoCo Warp-style query by 1.2–1.45×. Hardware gains on RTX remain unmeasured.
 
+## 3b. Measured on RT cores (RTX PRO 6000 Blackwell, Hugging Face Jobs)
+
+Driver 580.178 (OptiX 9.0): PyOptiX must be built against the optix-dev v9.0.0 headers, and the
+Warp PTX compiled for an older target (`OPTIX_PTX_ARCH=89`). Warp's CUDA 13 NVRTC PTX for sm_120
+is rejected with "Target architecture invalid". The proof of concept passes unchanged: 100% hit
+agreement, no validation messages.
+
+16.8M primary rays (4096 worlds × 64², DamagedHelmet), median of 7:
+
+| per world | Warp `mesh_query_ray` | OptiX bare GAS | MuJoCo Warp-style query | OptiX per-world IAS | OptiX single IAS |
+| --- | --- | --- | --- | --- | --- |
+| 1 helmet | 4.10 ms (4.1 Grays/s) | **0.77 ms (21.9)** | 9.43 ms (1.8) | 0.82 ms (20.5) | **0.85 ms (19.8)** |
+| 2 helmets | – | – | 16.7 ms (1.0) | 0.91 ms (18.5) | 0.95 ms (17.7) |
+
+The hardware gives 5.3× on a bare mesh and 11–18× over the two-level query the renderer uses
+today. Hit masks agree on 99.995–100% of pixels.
+
 ## 4. What an RT backend would change
 
 - **`trace.py`:** a second `make_trace` with the same `trace_closest` / `trace_any` signatures, built
