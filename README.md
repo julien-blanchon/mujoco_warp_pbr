@@ -70,12 +70,27 @@ Only native MuJoCo fields are used, so existing MJCF works unchanged:
 | light `attenuation`, `cutoff`, `exponent`, `ambient`, `specular` | MuJoCo's GL semantics (`light_model=LightModel.MUJOCO`) |
 | skybox texture | environment lighting and background when no `envmap` is given |
 
-`tools/gltf_to_mjcf.py` converts glTF 2.0 assets (metallic-roughness core) into MJCF with these
-fields.
+Two converters produce MJCF with these fields:
+- `tools/gltf_to_mjcf.py` converts glTF 2.0 assets (metallic-roughness core);
+- `tools/usd_to_mjcf.py` converts USD stages: UsdPreviewSurface and OmniPBR materials with their
+  textures, and UsdLux lights mapped to MuJoCo lights. It is used for the Isaac Sim / IsaacLab
+  demo scenes in `benchmarks/scenes.py`.
 
 Supported geometry: planes, spheres, capsules, ellipsoids, cylinders, boxes, meshes, height fields
 and SDFs with full PBR; flex is shaded without normal maps and Gaussian splats keep MuJoCo Warp's
 unlit compositing (a warning is printed for both).
+
+## Newton
+
+[`newton-pbr/`](newton-pbr/README.md) is a small package depending on this one and on
+[Newton](https://github.com/newton-physics/newton). Its `newton_pbr.SensorPbrCamera` mirrors
+`newton.sensors.SensorCamera.update`, so any Newton scene renders with this renderer, batched over
+all worlds:
+
+```python
+camera = newton_pbr.SensorPbrCamera(model, width=128, height=128, fovy=60.0, envmap="studio.hdr")
+camera.update(state, camera_transforms, color_image=color, depth_image=depth)
+```
 
 ## Performance
 
@@ -95,14 +110,31 @@ faster when all worlds render nearly the same image, e.g. fixed cameras), `block
 ## Benchmarks and validation
 
 ```bash
-python tools/fetch_assets.py            # Khronos glTF samples (converted) + Poly Haven HDRIs
+python tools/fetch_assets.py            # Khronos glTF, Menagerie robots, Poly Haven HDRIs
 python benchmarks/bench.py --scene damaged_helmet --nworld 4096 --res 64
-python benchmarks/sweep.py --preset compare --out results/compare.jsonl
+python benchmarks/sweep.py --preset score --out results/score.jsonl   # also: scaling, tune, renderers
 python benchmarks/validate.py --res 256 --spp 1024   # FLIP / PSNR against Mitsuba 3
+python benchmarks/gallery.py --scene franka_showroom --frames 48      # side-by-side orbit video
 ```
 
 Assets are cached in `$MJPBR_ASSET_DIR` (default `~/.cache/mujoco_warp_pbr`). The reference
 renderers (Mitsuba 3, Newton) and image metrics install with the `bench` extra.
+`tools/fetch_assets.py --only isaac` fetches the Isaac demo scenes; their licence allows local use
+only.
+
+`benchmarks/suite.py` compares every renderer:
+- this renderer: real-time tier, path-traced tier, and through `newton_pbr`;
+- MuJoCo Warp, MuJoCo's OpenGL renderer and Mitsuba 3;
+- Newton's `SensorCamera` and `ViewerRTX` (NVIDIA Omniverse RTX, on RTX GPUs).
+
+It runs them on showcase, robotics and light-rig scenes, for a single scene and for batches, and
+writes a markdown report with orbit videos. `tools/hf/run_suite.py` runs it on several
+[Hugging Face Jobs](https://huggingface.co/docs/huggingface_hub/guides/jobs) GPUs, with a private
+bucket carrying code, assets and results:
+
+```bash
+uv run tools/hf/run_suite.py --bucket USER/BUCKET --flavors rtx-pro-6000 h200 a100-large --sync-assets --wait
+```
 
 ## Development
 

@@ -249,6 +249,9 @@ def main():
   parser.add_argument("--refit", action="store_true", help="include the BVH refit in the timing")
   parser.add_argument("--iters", type=int, default=20)
   parser.add_argument("--repeats", type=int, default=5)
+  parser.add_argument(
+    "--time-budget", type=float, default=0.3, help="seconds per timed repeat (caps --iters; 0: always --iters)"
+  )
   parser.add_argument("--set", action="append", default=[], help="extra create_render_context kwarg KEY=VALUE")
   parser.add_argument("--randomize", action="store_true", help="per-world appearance randomisation")
   parser.add_argument("--jitter-camera", action="store_true", help="per-world random camera poses")
@@ -287,6 +290,13 @@ def main():
     while len(os.listdir(directory)) < int(count):
       time.sleep(0.05)
   sequential = args.renderer in ("mujoco", "mitsuba", "newton_rtx")
+  if args.time_budget > 0:
+    # Fewer iterations for slow configurations: each timed repeat lasts about time_budget.
+    start = time.perf_counter()
+    step()
+    wp.synchronize()
+    once = time.perf_counter() - start
+    args.iters = int(max(1, min(args.iters, round(args.time_budget / max(once, 1e-6)))))
   if sequential:
     times = time_loop(step, args.iters, args.repeats)
   else:
@@ -304,6 +314,7 @@ def main():
     "jitter_camera": args.jitter_camera,
     "jitter_scale": args.jitter_scale,
     "options": args.set,
+    "iters": args.iters,
     "sequential": sequential,
     "ms_per_frame_batch": median * 1e3,
     "frames_per_s": frames / median,

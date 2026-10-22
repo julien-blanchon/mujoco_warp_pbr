@@ -52,7 +52,16 @@ sys.path.insert(0, str(HERE))
 import scenes  # noqa: E402
 from sweep import run_bench  # noqa: E402
 
-SCENES = ["material_grid", "primitives", "damaged_helmet", "a_beautiful_game", "anymal_c", "franka_showroom"]
+SCENES = [
+  "material_grid",
+  "primitives",
+  "damaged_helmet",
+  "a_beautiful_game",
+  "anymal_c",
+  "franka_showroom",
+  "isaac_franka_cabinet",
+  "isaac_seattle_lab_table",
+]
 CONTEXTS = {"single": (1, 256), "batch_64": (4096, 64), "batch_128": (1024, 128)}
 _SEQUENTIAL = ["--iters", "2", "--repeats", "3", "--sequential-frames", "8"]
 RENDERERS = {
