@@ -147,6 +147,8 @@ class PbrRenderContext:
     has_reflection: whether any material has MuJoCo reflectance > 0
     unroll_lights: unroll the per-light loop at compile time (else a runtime loop)
     render_order: RenderOrder thread-to-pixel assignment
+    block_dim: threads per block of the render kernels (None: MuJoCo Warp's render block size)
+    max_registers: register cap per thread for the render kernels (None: compiler default)
     max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
       are unrolled)
     tier: Tier
@@ -199,6 +201,8 @@ class PbrRenderContext:
   has_reflection: bool
   unroll_lights: bool
   render_order: int
+  block_dim: Any
+  max_registers: Any
   max_unroll: int
   tier: int
   path_samples: int

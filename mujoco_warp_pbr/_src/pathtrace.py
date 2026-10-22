@@ -532,5 +532,5 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int):
       int(seed),
     ],
     outputs=[kernel_inputs.outputs(rc)],
-    block_dim=m.block_dim.render,
+    block_dim=rc.block_dim or m.block_dim.render,
   )

@@ -20,6 +20,7 @@ import mujoco
 import mujoco_warp as mjw
 import numpy as np
 import warp as wp
+from mujoco_warp._src import bvh as mjw_bvh
 
 from mujoco_warp_pbr._src import color
 from mujoco_warp_pbr._src import envmap as envmap_lib
@@ -78,6 +79,9 @@ def create_render_context(
   envmap_background: bool = True,
   use_skybox: bool = True,
   render_order: int = RenderOrder.TILED,
+  block_dim: int | None = None,
+  max_registers: int | None = None,
+  mesh_bvh_constructor: str = "cubql",
   tier: int = Tier.REALTIME,
   path_samples: int = 64,
   max_depth: int = 4,
@@ -125,6 +129,11 @@ def create_render_context(
     use_skybox: Without `envmap`, light the scene (physical light model) and fill the
       background with the model's skybox texture, if it has one.
     render_order: RenderOrder assignment of pixels to threads (see RenderOrder).
+    block_dim: Threads per block of the render kernels. None picks 256 for primitive-only scenes
+      and MuJoCo Warp's render block size (64) when meshes, heightfields or flex are rendered:
+      mesh traversal needs more registers and local memory per thread.
+    max_registers: Register cap per thread for the render kernels; None leaves it to the compiler.
+    mesh_bvh_constructor: Warp BVH builder for meshes ("cubql" as MuJoCo Warp, "sah", "lbvh").
     tier: Tier.REALTIME (direct lighting + split-sum IBL) or Tier.PATH (path tracing).
     path_samples: Path-traced samples per pixel (random sub-pixel positions).
     max_depth: Maximum path length in bounces (path-traced tier).
@@ -159,6 +168,16 @@ def create_render_context(
     enable_backface_culling=enable_backface_culling,
     enable_vertex_normals=enable_vertex_normals,
   )
+
+  if mesh_bvh_constructor != "cubql":
+    # MuJoCo Warp builds mesh BVHs with cuBQL; rebuild them with the requested builder.
+    ids = []
+    for mesh_id in range(mjm.nmesh):
+      mesh, _ = mjw_bvh.build_mesh_bvh(mjm, mesh_id, constructor=mesh_bvh_constructor)
+      base.mesh_registry[mesh.id] = mesh
+      ids.append(mesh.id)
+    if ids:
+      base.mesh_bvh_id = wp.array(ids, dtype=wp.uint64)
 
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
@@ -248,6 +267,11 @@ def create_render_context(
     # The environment replaces MuJoCo's ambient terms.
     ambient[:] = 0.0
 
+  if block_dim is None:
+    mesh_like = {int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_SDF), int(mujoco.mjtGeom.mjGEOM_HFIELD)}
+    has_meshes = bool(mesh_like & set(base.geom_ray_types)) or base.bvh_nflexgeom > 0
+    block_dim = None if has_meshes else 256
+
   ri = base.rgb_data.shape[1]
   return PbrRenderContext(
     base=base,
@@ -291,6 +315,8 @@ def create_render_context(
     has_reflection=has_reflection,
     unroll_lights=True,
     render_order=int(render_order),
+    block_dim=block_dim,
+    max_registers=max_registers,
     max_unroll=6,
     tier=int(tier),
     path_samples=path_samples,

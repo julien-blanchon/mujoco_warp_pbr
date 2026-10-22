@@ -402,11 +402,14 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
         break
     return radiance, first
 
+  kernel_options = {"cuda_max_registers": rc.max_registers} if rc.max_registers else {}
+
   @wp.kernel(
     module="unique",
     enable_backward=False,
     grid_stride=False,
     module_options={"fast_math": base.use_fast_math, "max_unroll": rc.max_unroll},
+    **kernel_options,
   )
   def render_megakernel(
     geo: Geometry,
@@ -555,5 +558,5 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
       int(seed),
     ],
     outputs=[kernel_inputs.outputs(rc)],
-    block_dim=m.block_dim.render,
+    block_dim=rc.block_dim or m.block_dim.render,
   )
