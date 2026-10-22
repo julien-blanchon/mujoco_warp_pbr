@@ -92,6 +92,16 @@ class PbrRenderContext:
     ambient_radiance: constant environment radiance                    (*,)
     dfg_lut: split-sum DFG lookup table indexed by (NoV, perceptual roughness)
     background_linear: linear display colour of rays that hit nothing
+    has_env: whether an environment map lights the scene (else constant ambient)
+    env_background: whether rays that hit nothing show the environment map
+    env_maps: EnvironmentMap objects behind the env arrays (keeps them alive)
+    env_radiance: radiance texture per environment map                 (nenv,)
+    env_prefiltered: GGX-prefiltered stack per environment map         (nenv,)
+    env_sh: SH9 Lambertian radiance coefficients                       (nenv, 9)
+    env_texel_angle: angular size of a radiance texel (largest map)
+    env_id: environment map shown in each world                        (*,)
+    env_intensity: radiance scale of the environment map               (*,)
+    env_yaw: rotation of the environment map about +z, radians         (*,)
     textures: material textures indexed by MuJoCo texture id
     textures_registry: the wp.Texture2D objects behind `textures` (keeps them alive)
     tex_size: texture (width, height)                                  (ntex,)
@@ -123,6 +133,16 @@ class PbrRenderContext:
   ambient_radiance: wp.array[wp.vec3]
   dfg_lut: wp.Texture2D
   background_linear: wp.vec3
+  has_env: bool
+  env_background: bool
+  env_maps: list
+  env_radiance: wp.array[wp.Texture2D]
+  env_prefiltered: wp.array[wp.Texture3D]
+  env_sh: wp.array2d[wp.vec3]
+  env_texel_angle: float
+  env_id: wp.array[int]
+  env_intensity: wp.array[float]
+  env_yaw: wp.array[float]
   textures: wp.array[wp.Texture2D]
   textures_registry: list
   tex_size: wp.array[wp.vec2]

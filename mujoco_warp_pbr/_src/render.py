@@ -33,6 +33,7 @@ from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.warp_util import event_scope
 
 from mujoco_warp_pbr._src import brdf
+from mujoco_warp_pbr._src import envmap
 from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import lights
 from mujoco_warp_pbr._src import material
@@ -75,6 +76,12 @@ class Environment:
   ambient_radiance: wp.array[wp.vec3]
   background: wp.vec3
   dfg_lut: wp.Texture2D
+  env_radiance: wp.array[wp.Texture2D]
+  env_prefiltered: wp.array[wp.Texture3D]
+  env_sh: wp.array2d[wp.vec3]
+  env_id: wp.array[int]
+  env_intensity: wp.array[float]
+  env_yaw: wp.array[float]
 
 
 @wp.struct
@@ -123,6 +130,9 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   has_transparency = rc.has_transparency
   max_layers = rc.max_layers if has_transparency else 1
   has_reflection = rc.has_reflection
+  has_env = rc.has_env
+  env_background = rc.env_background
+  inv_texel_angle = 1.0 / rc.env_texel_angle
 
   @wp.func
   def light_visibility(
@@ -232,12 +242,25 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     dfg = ibl.sample_dfg(env.dfg_lut, nov, pr)
     energy_comp = brdf.energy_compensation(f0, dfg)
 
-    # Ambient: constant-radiance environment through the split-sum terms.
+    # Image-based / ambient lighting through the split-sum terms (Filament).
     spec_albedo = brdf.specular_albedo(f0, dfg)
     ambient = env.ambient_radiance[worldid % env.ambient_radiance.shape[0]]
+    irradiance = ambient
+    prefiltered = ambient
+    if wp.static(has_env):
+      e = env.env_id[worldid % env.env_id.shape[0]]
+      yaw = env.env_yaw[worldid % env.env_yaw.shape[0]]
+      scale = env.env_intensity[worldid % env.env_intensity.shape[0]]
+      irradiance = ambient + envmap.eval_sh9(env.env_sh, e, envmap.rotate_yaw(normal, -yaw)) * scale
+      r = view - normal * (2.0 * wp.dot(view, normal))
+      dominant = wp.normalize(-r * (1.0 - alpha * alpha) + normal * (alpha * alpha))
+      prefiltered = ambient + envmap.sample_prefiltered(env.env_prefiltered[e], dominant, yaw, pr) * scale
+    # Specular occlusion from ambient occlusion (Lagarde & de Rousiers 2014).
+    ao = surface.occlusion
+    spec_ao = wp.clamp(wp.pow(nov + ao, wp.pow(2.0, -16.0 * alpha - 1.0)) - 1.0 + ao, 0.0, 1.0)
     radiance = (
-      wp.cw_mul(ambient, wp.cw_mul(diffuse_color, wp.vec3(1.0) - spec_albedo) + wp.cw_mul(spec_albedo, energy_comp))
-      * surface.occlusion
+      wp.cw_mul(irradiance, wp.cw_mul(diffuse_color, wp.vec3(1.0) - spec_albedo)) * ao
+      + wp.cw_mul(prefiltered, wp.cw_mul(spec_albedo, energy_comp)) * spec_ao
     )
 
     for li in range(wp.static(nlight)):
@@ -299,7 +322,13 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     return radiance + surface.emissive / env.exposure[worldid % env.exposure.shape[0]]
 
   @wp.func
-  def background(env: Environment, worldid: int, direction: wp.vec3) -> wp.vec3:
+  def background(env: Environment, worldid: int, direction: wp.vec3, spread: float) -> wp.vec3:
+    if wp.static(env_background):
+      e = env.env_id[worldid % env.env_id.shape[0]]
+      yaw = env.env_yaw[worldid % env.env_yaw.shape[0]]
+      scale = env.env_intensity[worldid % env.env_intensity.shape[0]]
+      lod = wp.log2(wp.max(spread * wp.static(inv_texel_angle), 1.0e-8))
+      return envmap.sample_radiance(env.env_radiance[e], direction, yaw, lod) * scale
     return env.background / env.exposure[worldid % env.exposure.shape[0]]
 
   @wp.func
@@ -322,7 +351,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     origin = point + normal * wp.static(_RAY_OFFSET)
     hit = trace_closest(geo, worldid, origin, r, float(MJ_MAXVAL))
     if hit.geom_id == -1:
-      return background(env, worldid, r)
+      return background(env, worldid, r, spread)
     p = origin + r * hit.dist
     surface, n = eval_surface(geo, mats, worldid, hit, p, r, footprint + spread * hit.dist)
     return shade_surface(geo, lit, env, worldid, surface, p, n, -r, headlight_dir, seed)
@@ -353,7 +382,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       if layer == 0:
         first = hit
       if hit.geom_id == -1:
-        radiance += background(env, worldid, direction) * throughput
+        radiance += background(env, worldid, direction, spread) * throughput
         break
       point = origin + direction * hit.dist
       cone = footprint + spread * (travelled + hit.dist)
@@ -513,6 +542,12 @@ def _environment(rc: PbrRenderContext) -> Environment:
   env.ambient_radiance = rc.ambient_radiance
   env.background = rc.background_linear
   env.dfg_lut = rc.dfg_lut
+  env.env_radiance = rc.env_radiance
+  env.env_prefiltered = rc.env_prefiltered
+  env.env_sh = rc.env_sh
+  env.env_id = rc.env_id
+  env.env_intensity = rc.env_intensity
+  env.env_yaw = rc.env_yaw
   return env
 
 

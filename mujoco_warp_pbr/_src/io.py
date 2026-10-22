@@ -22,6 +22,7 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp_pbr._src import color
+from mujoco_warp_pbr._src import envmap as envmap_lib
 from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import lights
 from mujoco_warp_pbr._src import material
@@ -69,6 +70,11 @@ def create_render_context(
   shadow_samples: int = 1,
   max_layers: int = 4,
   enable_reflections: bool = True,
+  envmap=None,
+  envmap_intensity: float | None = None,
+  envmap_rotation: float = 0.0,
+  envmap_background: bool = True,
+  use_skybox: bool = True,
   render_hdr: bool = False,
 ) -> PbrRenderContext:
   """Creates a PBR render context on device.
@@ -102,12 +108,23 @@ def create_render_context(
     shadow_samples: Shadow rays per light; > 1 gives soft shadows from the light's bulbradius.
     max_layers: Translucent surfaces composited front to back along a camera ray.
     enable_reflections: Trace one mirror ray for materials with MuJoCo reflectance > 0.
+    envmap: Environment lighting: a path to an equirectangular .hdr file, a float array
+      (height, width, 3) of linear radiance, or a list of those (select per world with `env_id`).
+      Row 0 is the zenith (+z); the centre column looks along +x.
+    envmap_intensity: Radiance scale of the environment map. None makes it display-relative
+      (a texel of 1 shows as white at the default exposure).
+    envmap_rotation: Rotation of the environment about +z in degrees.
+    envmap_background: Show the environment map where rays hit nothing.
+    use_skybox: Without `envmap`, light the scene (physical light model) and fill the
+      background with the model's skybox texture, if it has one.
     render_hdr: Also write linear HDR radiance (before exposure and tone mapping) to `hdr_data`.
 
   Returns:
     The PBR render context.
   """
   _warn_unsupported(mjm)
+  if not np.any(np.isin(mjm.geom_group, list(enabled_geom_groups))) and not mjm.nflex:
+    raise ValueError("the model has no geoms in the enabled geom groups to render")
   if samples_per_pixel < 1:
     raise ValueError("samples_per_pixel must be at least 1")
   if shadow_samples < 1:
@@ -184,6 +201,33 @@ def create_render_context(
     ((np.asarray(background_color[:3]) + 0.055) / 1.055) ** 2.4,
   )
 
+  # Environment: explicit maps, else the MJCF skybox, else constant ambient.
+  images = []
+  if envmap is not None:
+    for item in envmap if isinstance(envmap, (list, tuple)) else [envmap]:
+      images.append(envmap_lib.load_hdr(item) if isinstance(item, (str, bytes)) or hasattr(item, "__fspath__") else item)
+  skybox_only = False
+  if not images and use_skybox:
+    sky = envmap_lib.skybox_image(mjm)
+    if sky is not None:
+      images.append(sky)
+      # MuJoCo's GL lights never come from the skybox: there it is background only.
+      skybox_only = not physical
+  has_env = bool(images) and not skybox_only
+  if images:
+    env_maps, env_radiance, env_prefiltered, env_sh, env_width = envmap_lib.build_environments(images)
+  else:
+    env_maps, env_width = [], 1.0
+    env_radiance = wp.array([wp.Texture2D(np.zeros((1, 1, 4), np.float16))], dtype=wp.Texture2D)
+    env_prefiltered = wp.array([wp.Texture3D(np.zeros((1, 1, 1, 4), np.float16))], dtype=wp.Texture3D)
+    env_sh = wp.zeros((1, 9), dtype=wp.vec3)
+    env_maps = [env_radiance, env_prefiltered]
+  if envmap_intensity is None:
+    envmap_intensity = 1.0 / exposure
+  if has_env and physical:
+    # The environment replaces MuJoCo's ambient terms.
+    ambient[:] = 0.0
+
   ri = base.rgb_data.shape[1]
   return PbrRenderContext(
     base=base,
@@ -203,6 +247,16 @@ def create_render_context(
     ambient_radiance=wp.array([ambient], dtype=wp.vec3),
     dfg_lut=ibl.build_dfg_lut(),
     background_linear=wp.vec3(*background_linear),
+    has_env=has_env,
+    env_background=bool(images) and envmap_background,
+    env_maps=env_maps,
+    env_radiance=env_radiance,
+    env_prefiltered=env_prefiltered,
+    env_sh=env_sh,
+    env_texel_angle=envmap_lib.texel_angle(env_width),
+    env_id=wp.zeros(1, dtype=int),
+    env_intensity=wp.array([envmap_intensity], dtype=float),
+    env_yaw=wp.array([np.radians(envmap_rotation)], dtype=float),
     textures=wp.array(textures, dtype=wp.Texture2D),
     textures_registry=textures,
     tex_size=wp.array(tex_size, dtype=wp.vec2),
