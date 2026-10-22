@@ -134,16 +134,18 @@ def create_render_context(
       background with the model's skybox texture, if it has one.
     render_order: RenderOrder assignment of pixels to threads (see RenderOrder).
     block_dim: Threads per block of the render kernels. None picks 256 for primitive-only scenes
-      and MuJoCo Warp's render block size (64) when meshes, heightfields or flex are rendered:
-      mesh traversal needs more registers and local memory per thread.
+      and MuJoCo Warp's render block size (64) when meshes, heightfields or flex are rendered
+      (mesh traversal needs more registers and local memory per thread), and 64 on Blackwell
+      RTX GPUs (sm_120), where it is faster for every scene.
     max_registers: Register cap per thread for the render kernels. None picks 96, 5-12% faster
       than the compiler's choice on Hopper for both primitive and mesh scenes; 0 leaves the
       register count to the compiler.
     ordered_traversal: Traverse the scene BVH nearest child first (`traverse.py`; needs
       Warp >= 1.18; scenes with flex always use MuJoCo Warp's traversal). None picks it for the
       real-time tier with RGB output, where it is up to 24% faster (shading kernels trace
-      incoherent shadow and mirror rays); depth / segmentation-only and path-traced kernels are
-      faster with MuJoCo Warp's traversal.
+      incoherent shadow and mirror rays), except for primitive-only scenes on Blackwell RTX GPUs
+      (sm_120), where it is slower; depth / segmentation-only and path-traced kernels are faster
+      with MuJoCo Warp's traversal.
     mesh_bvh_constructor: Warp BVH builder for meshes ("cubql" as MuJoCo Warp, "sah", "lbvh").
     tier: Tier.REALTIME (direct lighting + split-sum IBL) or Tier.PATH (path tracing).
     path_samples: Path-traced samples per pixel (random sub-pixel positions).
@@ -283,15 +285,20 @@ def create_render_context(
     # The environment replaces MuJoCo's ambient terms.
     ambient[:] = 0.0
 
+  mesh_like = {int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_SDF), int(mujoco.mjtGeom.mjGEOM_HFIELD)}
+  has_meshes = bool(mesh_like & set(base.geom_ray_types)) or base.bvh_nflexgeom > 0
+  # Measured defaults (results/hf/tune_*.jsonl): on Ampere / Hopper, primitive-only scenes run
+  # fastest with 256-thread blocks and the ordered traversal; on Blackwell RTX (sm_120) with
+  # 64-thread blocks and MuJoCo Warp's traversal (both ~25% faster there).
+  blackwell_rtx = wp.get_device().arch >= 120
   if block_dim is None:
-    mesh_like = {int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_SDF), int(mujoco.mjtGeom.mjGEOM_HFIELD)}
-    has_meshes = bool(mesh_like & set(base.geom_ray_types)) or base.bvh_nflexgeom > 0
-    block_dim = None if has_meshes else 256
+    block_dim = None if has_meshes or blackwell_rtx else 256
 
   if max_registers is None:
     max_registers = 96
   if ordered_traversal is None:
     ordered_traversal = tier == Tier.REALTIME and bool(base.render_rgb.numpy().any())
+    ordered_traversal = ordered_traversal and (has_meshes or not blackwell_rtx)
   ordered_traversal = ordered_traversal and traverse.AVAILABLE and base.bvh_nflexgeom == 0
 
   ri = base.rgb_data.shape[1]
