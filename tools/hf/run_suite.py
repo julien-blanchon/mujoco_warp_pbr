@@ -98,11 +98,13 @@ def main():
   parser.add_argument("--suite-args", default="", help="extra benchmarks/suite.py arguments, e.g. --quick")
   parser.add_argument("--sync-assets", action="store_true", help="upload $MJPBR_ASSET_DIR to the bucket first")
   parser.add_argument("--asset-dir", type=Path, default=None)
+  parser.add_argument("--no-sync-code", action="store_true", help="launch with the code already in the bucket")
   parser.add_argument("--wait", action="store_true", help="wait for the jobs, then download and report")
   args = parser.parse_args()
 
   create_bucket(args.bucket, private=True, exist_ok=True)
-  sync_code(args.bucket)
+  if not args.no_sync_code:
+    sync_code(args.bucket)
   if args.sync_assets:
     import os
 
