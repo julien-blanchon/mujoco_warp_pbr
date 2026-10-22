@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mujoco-warp-pbr"
+version = "0.0.1"
+description = "Batched physically based renderer for MuJoCo Warp"
+readme = {file = "README.md", content-type = "text/markdown"}
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.13.0",
+    "mujoco-warp",
+    "numpy",
+    "warp-lang>=1.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pillow",
+    "pre-commit",
+    "pytest",
+    "pytest-xdist",
+    "ruff",
+]
+# Reference renderers and image metrics used by benchmarks/.
+bench = [
+    "flip-evaluator",
+    "mitsuba",
+    "pillow",
+]
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com/"
+explicit = true
+
+[[tool.uv.index]]
+name = "mujoco"
+url = "https://py.mujoco.org/"
+explicit = true
+
+[tool.uv.sources]
+warp-lang = {index = "nvidia"}
+mujoco = {index = "mujoco"}
+# Pinned: the renderer builds on mujoco_warp._src internals.
+mujoco-warp = {git = "https://github.com/google-deepmind/mujoco_warp", rev = "6c33934b3cc0a81025b212e574fa95fca16ef4c5"}
+
+[tool.ruff]
+line-length = 128
+indent-width = 2
+extend-exclude = ["context", "*.ipynb"]
+
+[tool.ruff.lint]
+select = ["D", "I", "W", "F401"]
+ignore = ["D100", "D103"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+single-line-exclusions = ["typing"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+max-line-length = 128
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["D"]
+"tests/*" = ["D"]
+"benchmarks/*" = ["D"]
+"tools/*" = ["D"]
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["mujoco_warp_pbr*"]
