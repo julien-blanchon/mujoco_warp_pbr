@@ -81,8 +81,8 @@ unlit compositing (a warning is printed for both).
 
 On one GH200 (Hopper, no RT cores), 4096 worlds at 64² with an HDR environment, the real-time
 tier renders mesh scenes at or above the speed of MuJoCo Warp's Lambert/Phong renderer and of
-Newton's camera sensor, e.g. ~130k frames/s on the DamagedHelmet scene. See
-`results/m5_baseline.md` and later reports for tables, and `results/m6_pathtrace.md` for the
+Newton's camera sensor, e.g. ~174k frames/s on the DamagedHelmet scene. See
+`results/m5_baseline.md` and `results/m7_autoresearch.md` for tables, and `results/m6_pathtrace.md` for the
 path-traced tier.
 
 Tuning knobs: `max_registers` (96 by default, tuned on Hopper; 0 leaves it to the compiler),

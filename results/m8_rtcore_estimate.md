@@ -17,7 +17,8 @@ Times are ms per batch.
 
 - Primary traversal is the depth-only render, which also counts ray generation and output writes,
   so it slightly overestimates traversal.
-- Shadow traversal is full minus no-shadows.
+- Shadow traversal is full minus no-shadows. Some of that difference is register and occupancy
+  cost from the inlined shadow traversal, so f is an upper bound.
 
 ## Amdahl estimate
 
