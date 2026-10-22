@@ -20,5 +20,5 @@ export PATH="$HOME/.local/bin:$PATH"
 mkdir -p /work
 cp -r /data/code /work/
 cd /work/code
-uv sync -q --python 3.12 --extra dev --extra bench
+uv sync -q --python 3.12 --all-packages --extra dev --extra bench
 echo "bootstrap done: $(uv run python -c 'import warp as wp; wp.init(); print(wp.get_device().name)' 2>/dev/null | tail -1)"

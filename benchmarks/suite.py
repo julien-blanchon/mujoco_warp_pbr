@@ -133,6 +133,7 @@ def main():
   parser.add_argument("--context", nargs="*", default=list(CONTEXTS), choices=list(CONTEXTS))
   parser.add_argument("--quick", action="store_true", help="smaller batches and videos (smoke test)")
   parser.add_argument("--no-video", action="store_true")
+  parser.add_argument("--retry-failed", action="store_true", help="re-run configurations that failed before")
   parser.add_argument("--video-frames", type=int, default=48)
   parser.add_argument("--video-res", type=int, default=320)
   parser.add_argument("--video-spp", type=int, default=256, help="samples per pixel of the path-traced panels")
@@ -149,9 +150,13 @@ def main():
   results = args.out / "results.jsonl"
   done = set()
   if results.exists():  # resume: skip configurations already measured or failed
+    kept = []
     for line in results.read_text().splitlines():
-      row = json.loads(line)
-      done.add(json.dumps(row["key"], sort_keys=True))
+      entry = json.loads(line)
+      if entry["ok"] or not args.retry_failed:
+        done.add(json.dumps(entry["key"], sort_keys=True))
+        kept.append(line)
+    results.write_text("".join(line + "\n" for line in kept))
   configs = configurations(args.scene, contexts, {r: RENDERERS[r] for r in args.renderer})
   for i, (key, config) in enumerate(configs):
     if json.dumps(key, sort_keys=True) in done:
