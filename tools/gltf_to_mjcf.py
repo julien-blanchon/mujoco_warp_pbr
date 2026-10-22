@@ -210,9 +210,13 @@ class _Converter:
     if pbr.baseColorTexture is not None:
       role = "rgb" if alpha_mode == "OPAQUE" else "rgba"
       mode = "RGB" if role == "rgb" else "RGBA"
-      layers.append((self._save_texture(f"mat{index}_basecolor", self.gltf.image(pbr.baseColorTexture.index).convert(mode), "sRGB"), role))
+      layers.append(
+        (self._save_texture(f"mat{index}_basecolor", self.gltf.image(pbr.baseColorTexture.index).convert(mode), "sRGB"), role)
+      )
     if mat.normalTexture is not None:
-      layers.append((self._save_texture(f"mat{index}_normal", self.gltf.image(mat.normalTexture.index).convert("RGB"), "linear"), "normal"))
+      layers.append(
+        (self._save_texture(f"mat{index}_normal", self.gltf.image(mat.normalTexture.index).convert("RGB"), "linear"), "normal")
+      )
     orm = self._orm_texture(index, mat)
     if orm is not None:
       layers.append((orm, "orm"))
@@ -222,7 +226,9 @@ class _Converter:
 
     metallic = 1.0 if pbr.metallicFactor is None else pbr.metallicFactor
     roughness = 1.0 if pbr.roughnessFactor is None else pbr.roughnessFactor
-    attrs = f'name="mat{index}" rgba="{" ".join(f"{c:.6g}" for c in rgba)}" metallic="{metallic:.6g}" roughness="{roughness:.6g}"'
+    attrs = (
+      f'name="mat{index}" rgba="{" ".join(f"{c:.6g}" for c in rgba)}" metallic="{metallic:.6g}" roughness="{roughness:.6g}"'
+    )
     if emissive is not None:
       attrs += ' emission="1"'
     body = "".join(f'\n      <layer texture="{tex}" role="{role}"/>' for tex, role in layers)

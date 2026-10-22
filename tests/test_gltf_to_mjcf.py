@@ -59,9 +59,7 @@ def _quad_glb(path: Path, scale: tuple[float, float, float] = (1.0, 1.0, 1.0)):
     meshes=[
       pygltflib.Mesh(
         primitives=[
-          pygltflib.Primitive(
-            attributes=pygltflib.Attributes(POSITION=0, NORMAL=1, TEXCOORD_0=2), indices=3, material=0
-          )
+          pygltflib.Primitive(attributes=pygltflib.Attributes(POSITION=0, NORMAL=1, TEXCOORD_0=2), indices=3, material=0)
         ]
       )
     ],
