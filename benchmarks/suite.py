@@ -65,6 +65,9 @@ RENDERERS = {
 }
 # Renderers lit by the scene's HDR environment (the others only see the scene's own lights).
 _ENV_RENDERERS = {"pbr", "pbr_path", "newton_pbr", "mitsuba"}
+# Newton's MJCF import of these scenes takes minutes (mesh processing of >1M triangles): its two
+# renderers are measured in batch_64 only.
+SLOW_NEWTON_IMPORT = {"a_beautiful_game"}
 GALLERY_PANELS = ["mujoco", "mjwarp", "newton", "pbr", "pbr_path", "mitsuba"]
 ENVMAP = "studio_small_09_1k.hdr"
 
@@ -114,6 +117,8 @@ def configurations(scene_names: list[str], contexts: dict, renderers: dict) -> l
         sequential = renderer in ("mujoco", "mitsuba")
         if sequential and context == "batch_64":
           continue  # their per-image rate does not depend on nworld: 256² and 128² suffice
+        if renderer in ("newton", "newton_pbr") and scene in SLOW_NEWTON_IMPORT and context != "batch_64":
+          continue
         lit = envmap if renderer in _ENV_RENDERERS and scene not in scenes.LIGHTS_ONLY else []
         key = {"scene": scene, "context": context, "renderer": renderer, "nworld": nworld, "res": res}
         configs.append((key, ["--scene", scene, "--nworld", str(nworld), "--res", str(res), *args, *lit]))
