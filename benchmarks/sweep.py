@@ -82,11 +82,13 @@ def configurations(preset: str) -> list[list[str]]:
         configs.append([*size, "--renderer", "newton"])
         if nworld == 4096:
           continue  # sequential renderers: same per-image rate as 1024 worlds
-        configs.append([*size, "--renderer", "mujoco"])
+        # Sequential renderers: a few timed images suffice (their rate does not depend on nworld).
+        sequential = ["--iters", "2", "--repeats", "3", "--sequential-frames", "16"]
+        configs.append([*size, "--renderer", "mujoco", *sequential])
         # Mitsuba's exporter has no capsules / cylinders.
         if scene != "primitives":
           for spp in (16, 256):
-            configs.append([*size, "--renderer", "mitsuba", "--mitsuba-spp", str(spp), *_envmap_option()])
+            configs.append([*size, "--renderer", "mitsuba", "--mitsuba-spp", str(spp), *sequential, *_envmap_option()])
   elif preset == "scaling":
     sizes = [(n, 64) for n in (1, 4, 16, 64, 256, 1024, 4096, 16384, 32768)]
     sizes += [(n, 128) for n in (1, 16, 256, 1024, 4096, 8192)]
