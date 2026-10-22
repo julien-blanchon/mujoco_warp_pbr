@@ -183,8 +183,15 @@ class Gallery:
       mjpbr.get_rgb(rc, 0, rgb)
       out[name] = rgb.numpy()[0]
     if self.mitsuba:
-      from references import mitsuba_scene
+      out["mitsuba"] = self._mitsuba_frame()
+    return [out.get(p) for p in self.panels]
 
+  def _mitsuba_frame(self) -> np.ndarray | None:
+    """The scene is exported to Mitsuba once; later frames only move its camera."""
+    import mitsuba as mi
+    from references import mitsuba_scene
+
+    if getattr(self, "_mi_scene", None) is None:
       try:
         scene = mitsuba_scene.scene_dict(
           self.mjm,
@@ -198,11 +205,20 @@ class Gallery:
           integrator="path",
           max_depth=5,
         )
-        out["mitsuba"] = tone_map(mitsuba_scene.render(scene), self.exposure)
       except NotImplementedError as e:
         print(f"mitsuba panel disabled: {e}")
         self.mitsuba = False
-    return [out.get(p) for p in self.panels]
+        return None
+      self._mi_scene = mi.load_dict(scene)
+      self._mi_params = mi.traverse(self._mi_scene)
+    else:
+      xmat = self.mjd.cam_xmat[self.cam].reshape(3, 3)
+      origin = self.mjd.cam_xpos[self.cam]
+      self._mi_params["sensor.to_world"] = mi.ScalarTransform4f().look_at(
+        origin=origin.tolist(), target=(origin - xmat[:, 2]).tolist(), up=xmat[:, 1].tolist()
+      )
+      self._mi_params.update()
+    return tone_map(np.array(mi.render(self._mi_scene, spp=self.spp)), self.exposure)
 
   def close(self):
     if self.rtx is not None:
