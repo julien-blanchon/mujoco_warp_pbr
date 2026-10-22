@@ -15,9 +15,10 @@
 
 """Builds a Mitsuba 3 scene equivalent to a MuJoCo scene rendered by mujoco_warp_pbr.
 
-Covers what the validation scenes use: spheres, ellipsoids, planes, boxes and meshes; the
-principled BSDF with base colour / roughness / metallic / normal textures; directional and
-point lights, a constant ambient and an equirect environment map. Material values come from
+Covers spheres, ellipsoids, planes, boxes, capsules, cylinders and meshes; the renderer's BSDF
+or the principled BSDF with base colour / roughness / metallic / normal textures; directional,
+point and spot lights (point-like: bulb radii are ignored), a constant ambient and an equirect
+environment map. Material values come from
 the PbrRenderContext so both renderers see identical inputs. Requires a Mitsuba variant to be set.
 """
 
@@ -38,6 +39,27 @@ def _transform(pos: np.ndarray, mat: np.ndarray, scale) -> "mi.ScalarTransform4f
   m[:3, :3] = mat.reshape(3, 3) * np.asarray(scale)[None, :]
   m[:3, 3] = pos
   return mi.ScalarTransform4f(m.tolist())
+
+
+def _frame_z(axis: np.ndarray) -> np.ndarray:
+  """A rotation whose third column is the unit vector `axis`."""
+  z = axis / np.linalg.norm(axis)
+  x = np.cross([0.0, 1.0, 0.0] if abs(z[1]) < 0.9 else [1.0, 0.0, 0.0], z)
+  x /= np.linalg.norm(x)
+  return np.stack([x, np.cross(z, x), z], axis=1)
+
+
+def _tube(pos: np.ndarray, mat: np.ndarray, radius: float, half_length: float, caps: str) -> list[dict]:
+  """Shapes of a capsule (caps="sphere") or a capped cylinder (caps="disk") along the geom's z."""
+  axis = mat.reshape(3, 3)[:, 2]
+  p0, p1 = pos - axis * half_length, pos + axis * half_length
+  shapes = [{"type": "cylinder", "p0": p0.tolist(), "p1": p1.tolist(), "radius": radius}]
+  for end, outward in ((p0, -axis), (p1, axis)):
+    if caps == "sphere":
+      shapes.append({"type": "sphere", "center": end.tolist(), "radius": radius})
+    else:
+      shapes.append({"type": "disk", "to_world": _transform(end, _frame_z(outward), [radius, radius, 1.0])})
+  return shapes
 
 
 def _texture_array(mjm: mujoco.MjModel, rc: mjpbr.PbrRenderContext, tex_id: int) -> np.ndarray:
@@ -208,6 +230,12 @@ def scene_dict(
     elif gtype == mujoco.mjtGeom.mjGEOM_MESH:
       scene[f"geom{g}"] = _mesh_shape(mjm, mjd, g, f"geom{g}", bsdf_dict, _emitter(mjm, rc, g))
       continue
+    elif int(gtype) in (int(mujoco.mjtGeom.mjGEOM_CAPSULE), int(mujoco.mjtGeom.mjGEOM_CYLINDER)):
+      caps = "sphere" if gtype == mujoco.mjtGeom.mjGEOM_CAPSULE else "disk"
+      for k, part in enumerate(_tube(pos, mat, float(size[0]), float(size[1]), caps)):
+        part["bsdf"] = bsdf_dict
+        scene[f"geom{g}_{k}"] = part
+      continue
     else:
       raise NotImplementedError(f"geom type {gtype} is not exported to Mitsuba")
     shape["bsdf"] = bsdf_dict
@@ -233,8 +261,21 @@ def scene_dict(
         "position": mjd.light_xpos[i].tolist(),
         "intensity": {"type": "rgb", "value": color},
       }
+    elif mjm.light_type[i] == pbr_lights.LIGHT_SPOT:
+      # Mitsuba blends from beam_width to cutoff_angle, as the renderer's smooth spot cone.
+      cutoff = float(mjm.light_cutoff[i])
+      origin = mjd.light_xpos[i]
+      scene[f"light{i}"] = {
+        "type": "spot",
+        "to_world": mi.ScalarTransform4f().look_at(
+          origin=origin.tolist(), target=(origin + mjd.light_xdir[i]).tolist(), up=_frame_z(mjd.light_xdir[i])[:, 0].tolist()
+        ),
+        "intensity": {"type": "rgb", "value": color},
+        "cutoff_angle": cutoff,
+        "beam_width": cutoff * pbr_lights.SPOT_INNER_FRACTION,
+      }
     else:
-      raise NotImplementedError("only directional and point lights are exported to Mitsuba")
+      raise NotImplementedError("only directional, point and spot lights are exported to Mitsuba")
 
   ambient = rc.ambient_radiance.numpy()[0]
   if np.any(ambient > 0):

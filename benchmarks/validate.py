@@ -97,6 +97,29 @@ def _hdri(name: str) -> np.ndarray:
   return envmap_lib.load_hdr(scenes.asset_dir() / "hdri" / f"{name}_1k.hdr")
 
 
+def _tubes(light: str) -> mujoco.MjModel:
+  """Capsules and cylinders on a floor (no environment). The spot variant differs from Mitsuba in
+  the cone falloff (ours: Filament's smooth cone, Mitsuba's: linear in angle)."""
+  return mujoco.MjModel.from_xml_string(f"""
+    <mujoco>
+      <visual><headlight active="0"/></visual>
+      <asset>
+        <material name="red" rgba="0.8 0.2 0.15 1" roughness="0.4"/>
+        <material name="metal" rgba="0.9 0.9 0.9 1" metallic="1" roughness="0.3"/>
+        <material name="floor" rgba="0.6 0.6 0.6 1" roughness="0.8"/>
+      </asset>
+      <worldbody>
+        {light}
+        <geom type="plane" size="3 3 0.1" material="floor"/>
+        <geom type="capsule" size="0.12 0.25" pos="-0.35 0 0.37" material="red"/>
+        <geom type="capsule" size="0.08 0.3" pos="0.05 0.2 0.1" euler="90 0 30" material="metal"/>
+        <geom type="cylinder" size="0.15 0.2" pos="0.4 0.05 0.2" material="red"/>
+        <geom type="cylinder" size="0.1 0.15" pos="0.05 -0.3 0.35" euler="0 70 0" material="metal"/>
+        <camera name="cam" pos="0 -2.2 1.2" xyaxes="1 0 0 0 0.5 0.866" fovy="35"/>
+      </worldbody>
+    </mujoco>""")
+
+
 # name -> (model factory, envmap factory or None)
 VALIDATION = {
   "grid_env": (lambda: _grid(""), lambda: _hdri("studio_small_09")),
@@ -106,6 +129,13 @@ VALIDATION = {
   "damaged_helmet": (lambda: _khronos("DamagedHelmet"), lambda: _hdri("kloofendal_48d_partly_cloudy_puresky")),
   "water_bottle": (lambda: _khronos("WaterBottle"), lambda: _hdri("venice_sunset")),
   "normal_tangent": (lambda: _khronos("NormalTangentMirrorTest"), lambda: _hdri("studio_small_09")),
+  "tubes_point": (lambda: _tubes('<light type="point" pos="0.4 -0.6 1.6" intensity="3" range="1000" bulbradius="0"/>'), None),
+  "tubes_spot": (
+    lambda: _tubes(
+      '<light type="spot" pos="0.4 -0.6 1.6" dir="-0.2 0.35 -1" intensity="6" range="1000" cutoff="35" bulbradius="0"/>'
+    ),
+    None,
+  ),
 }
 
 
