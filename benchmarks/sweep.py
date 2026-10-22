@@ -17,8 +17,9 @@
 
 Presets:
   score:   the fixed set behind the optimisation score: 3 scenes (one per group) × nworld
-           {1024, 4096} × resolution {64, 128}, 1 spp, plus a 2×2-spp point. The score is the
-           geometric mean of camera-frames/s.
+           {1024, 4096} × resolution {64, 128}, 1 spp, plus a 2×2-spp point, with per-world camera
+           jitter (identical worlds would overstate ray coherence). The score is the geometric
+           mean of camera-frames/s.
   compare: mujoco_warp_pbr vs mujoco_warp (shadows on) vs Newton on the same scenes and sizes.
 
 Usage:
@@ -31,9 +32,13 @@ import math
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# On a shared GPU, wait for other users' work to finish instead of benchmarking under contention.
+BUSY_RETRIES = 60
+BUSY_WAIT_S = 30
 SCORE_SCENES = ["material_grid", "primitives", "damaged_helmet"]
 ENVMAP = "studio_small_09_1k.hdr"
 
@@ -83,7 +88,11 @@ def main():
   rows = []
   for config in configurations(args.preset):
     cmd = [sys.executable, str(HERE / "bench.py"), *config, *args.extra]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    for _ in range(BUSY_RETRIES):
+      result = subprocess.run(cmd, capture_output=True, text=True)
+      if "GPU in use" not in result.stderr:
+        break
+      time.sleep(BUSY_WAIT_S)
     lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
     if result.returncode != 0 or not lines:
       print("FAILED:", " ".join(config), result.stderr.strip().splitlines()[-1:] if result.stderr else "")

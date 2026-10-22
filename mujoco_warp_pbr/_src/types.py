@@ -64,6 +64,23 @@ class ToneMapper(enum.IntEnum):
   CLAMP = 2
 
 
+class RenderOrder(enum.IntEnum):
+  """Assignment of pixels to threads (outputs are always stored row-major).
+
+  Attributes:
+    ROW: thread order follows image rows; a warp covers 32 pixels of one row.
+    TILED: 8-row bands traversed column by column; a warp covers a 4 × 8 pixel tile. Default:
+      ~15-20% faster than ROW whether worlds look alike or not.
+    WORLD: neighbouring threads render the same pixel in consecutive worlds. Up to ~2.7× faster
+      when worlds render nearly identical images (fixed cameras, small state differences), but
+      ~2× slower than TILED when they differ a lot (e.g. randomised camera poses).
+  """
+
+  ROW = 0
+  TILED = 1
+  WORLD = 2
+
+
 class UnsetMaterial(enum.IntEnum):
   """How material fields MuJoCo leaves unset (metallic / roughness = -1) are resolved.
 
@@ -129,6 +146,7 @@ class PbrRenderContext:
     max_layers: translucent layers composited per ray
     has_reflection: whether any material has MuJoCo reflectance > 0
     unroll_lights: unroll the per-light loop at compile time (else a runtime loop)
+    render_order: RenderOrder thread-to-pixel assignment
     max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
       are unrolled)
     tier: Tier
@@ -180,6 +198,7 @@ class PbrRenderContext:
   max_layers: int
   has_reflection: bool
   unroll_lights: bool
+  render_order: int
   max_unroll: int
   tier: int
   path_samples: int

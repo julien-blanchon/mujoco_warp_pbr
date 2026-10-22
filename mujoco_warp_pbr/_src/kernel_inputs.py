@@ -20,6 +20,7 @@ from mujoco_warp import Data
 from mujoco_warp import Model
 
 from mujoco_warp_pbr._src.types import PbrRenderContext
+from mujoco_warp_pbr._src.types import RenderOrder
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -127,3 +128,28 @@ def outputs(rc: PbrRenderContext) -> Outputs:
   out.seg = base.seg_data
   out.hdr = rc.hdr_data
   return out
+
+
+# Height of the pixel bands of RenderOrder.TILED.
+TILE_ROWS = 8
+
+
+def make_thread_pixel(order: int) -> wp.Function:
+  """Build the thread index -> (px, py) bijection of a RenderOrder for one camera image."""
+
+  @wp.func
+  def thread_pixel(index: int, width: int, height: int) -> wp.vec2i:
+    if wp.static(order == RenderOrder.TILED):
+      band = index // (width * wp.static(TILE_ROWS))
+      rows = wp.min(wp.static(TILE_ROWS), height - band * wp.static(TILE_ROWS))
+      i = index - band * width * wp.static(TILE_ROWS)
+      return wp.vec2i(i // rows, band * wp.static(TILE_ROWS) + i % rows)
+    return wp.vec2i(index % width, index // width)
+
+  return thread_pixel
+
+
+def launch_dim(rc: PbrRenderContext, nworld: int) -> tuple[int, int]:
+  if rc.render_order == RenderOrder.WORLD:
+    return (rc.base.total_rays, nworld)
+  return (nworld, rc.base.total_rays)

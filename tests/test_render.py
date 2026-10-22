@@ -197,3 +197,24 @@ def test_exposure_from_ev100():
   # Filament's default camera (f/16, 1/125 s, ISO 100) is EV100 ≈ 14.97.
   ev100 = np.log2(16.0**2 / (1 / 125) * 100 / 100)
   assert color.exposure_from_ev100(ev100) == pytest.approx(1.0 / (1.2 * 2**ev100))
+
+
+@pytest.mark.parametrize("order", [mjpbr.RenderOrder.TILED, mjpbr.RenderOrder.WORLD])
+def test_render_orders_produce_identical_images(scene, order):
+  xml = """
+    <mujoco>
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+        <geom type="plane" size="3 3 0.1"/>
+        <geom type="sphere" pos="0 0 0.4" size="0.3" rgba="0.8 0.2 0.2 1"/>
+        <camera name="a" pos="0 -2.5 1.2" xyaxes="1 0 0 0 0.45 0.9"/>
+        <camera name="b" pos="2 0 1" xyaxes="0 1 0 -0.4 0 0.9"/>
+      </worldbody>
+    </mujoco>
+  """
+  # Sizes that are not multiples of the 8-row tile band exercise the last, shorter band.
+  kwargs = dict(nworld=2, cam_res=[(37, 21), (16, 11)], render_depth=True, render_seg=True)
+  row = scene(xml, **kwargs).render()
+  other = scene(xml, render_order=order, **kwargs).render()
+  np.testing.assert_array_equal(other.rc.base.rgb_data.numpy(), row.rc.base.rgb_data.numpy())
+  np.testing.assert_array_equal(other.rc.base.seg_data.numpy(), row.rc.base.seg_data.numpy())

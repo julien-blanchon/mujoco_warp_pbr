@@ -53,6 +53,7 @@ from mujoco_warp_pbr._src.kernel_inputs import Outputs
 from mujoco_warp_pbr._src.material import Materials
 from mujoco_warp_pbr._src.trace import Geometry
 from mujoco_warp_pbr._src.types import PbrRenderContext
+from mujoco_warp_pbr._src.types import RenderOrder
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -82,6 +83,8 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   eval_light = lights.make_eval_light(rc.light_model, base.has_spot_lights)
   eval_surface = material.make_eval_surface(geom_types, rc.features, base.enable_vertex_normals)
   display_transform = make_display_transform(rc.tone_mapper)
+  thread_pixel = kernel_inputs.make_thread_pixel(rc.render_order)
+  world_order = rc.render_order == RenderOrder.WORLD
 
   nlight = m.nlight
   use_shadows = rc.use_shadows
@@ -401,7 +404,10 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     seed: int,
     out: Outputs,
   ):
-    worldid, rayid = wp.tid()
+    if wp.static(world_order):
+      rayid, worldid = wp.tid()
+    else:
+      worldid, rayid = wp.tid()
     camid = int(-1)
     pixelid = int(-1)
     offset = int(0)
@@ -423,8 +429,10 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     cam = cams.cam_id_map[camid]
     img_w = cams.cam_res[camid][0]
     img_h = cams.cam_res[camid][1]
-    px = pixelid % img_w
-    py = pixelid // img_w
+    pixel = thread_pixel(pixelid, img_w, img_h)
+    px = pixel[0]
+    py = pixel[1]
+    pixelid = py * img_w + px
     projection = cams.cam_projection[cam]
     fovy = cams.cam_fovy[worldid % cams.cam_fovy.shape[0], cam]
     sensorsize = cams.cam_sensorsize[cam]
@@ -511,7 +519,7 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int):
     rc._megakernel = build_pathtracer(m, rc)
   wp.launch(
     kernel=rc._megakernel,
-    dim=(d.nworld, rc.base.total_rays),
+    dim=kernel_inputs.launch_dim(rc, d.nworld),
     inputs=[
       trace.geometry(m, d, rc.base),
       material.materials(m, rc),

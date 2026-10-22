@@ -127,6 +127,29 @@ def randomize(m, rc, nworld: int, seed: int = 0):
     rc.env_yaw = wp.array(rng.uniform(0, 2 * np.pi, nworld).astype(np.float32), dtype=float)
 
 
+def jitter_cameras(d, nworld: int, seed: int = 1, offset: float = 0.03, angle_deg: float = 2.0, scale: float = 1.0):
+  """Per-world random camera offsets and small rotations, so every world renders a different image.
+
+  Identical worlds would trace identical rays and overstate the coherence of real batches.
+  """
+  rng = np.random.default_rng(seed)
+  pos = d.cam_xpos.numpy()
+  mat = d.cam_xmat.numpy()
+  offset *= scale
+  angle_deg *= scale
+  pos += rng.normal(0.0, offset, pos.shape)
+  for w in range(nworld):
+    for c in range(mat.shape[1]):
+      axis = rng.normal(size=3)
+      axis /= np.linalg.norm(axis)
+      a = np.radians(angle_deg) * rng.normal()
+      k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+      rot = np.eye(3) + np.sin(a) * k + (1 - np.cos(a)) * k @ k
+      mat[w, c] = rot @ mat[w, c]
+  d.cam_xpos.assign(pos)
+  d.cam_xmat.assign(mat)
+
+
 def time_loop(step, iters: int, repeats: int) -> list[float]:
   times = []
   for _ in range(repeats):
@@ -166,14 +189,18 @@ def main():
   parser.add_argument("--repeats", type=int, default=5)
   parser.add_argument("--set", action="append", default=[], help="extra create_render_context kwarg KEY=VALUE")
   parser.add_argument("--randomize", action="store_true", help="per-world appearance randomisation")
+  parser.add_argument("--jitter-camera", action="store_true", help="per-world random camera poses")
+  parser.add_argument("--jitter-scale", type=float, default=1.0, help="scale of the camera jitter (1: 3 cm, 2 deg)")
   parser.add_argument("--out", type=Path)
   parser.add_argument("--save-image", type=Path)
-  parser.add_argument("--allow-busy", action="store_true", help="run even if other GPU processes are present")
+  parser.add_argument("--allow-busy", action="store_true", help="run even if the GPU is in use by other processes")
   args = parser.parse_args()
 
-  before = gpu_busy()
-  if before.get("gpu_procs", 0) > 0 and not args.allow_busy:
-    sys.exit(f"GPU busy ({before}); rerun with --allow-busy to benchmark anyway")
+  # Other processes may hold GPU memory on a shared machine; only active use skews timings.
+  samples = [gpu_busy() for _ in range(5)]
+  before = max(samples, key=lambda b: b.get("gpu_util", 0))
+  if before.get("gpu_util", 0) > 5 and not args.allow_busy:
+    sys.exit(f"GPU in use ({before}); rerun with --allow-busy to benchmark anyway")
 
   group, make = scenes.SCENES[args.scene]
   spec = make()
@@ -181,6 +208,8 @@ def main():
   m, d, rc, base, step = build(args, mjm, spec)
   if args.randomize:
     randomize(m, rc, args.nworld)
+  if args.jitter_camera and d is not None:
+    jitter_cameras(d, args.nworld, scale=args.jitter_scale)
   jit_start = time.perf_counter()
   step()
   wp.synchronize()
@@ -199,6 +228,8 @@ def main():
     "res": args.res,
     "refit": args.refit,
     "randomize": args.randomize,
+    "jitter_camera": args.jitter_camera,
+    "jitter_scale": args.jitter_scale,
     "options": args.set,
     "ms_per_frame_batch": median * 1e3,
     "frames_per_s": frames / median,

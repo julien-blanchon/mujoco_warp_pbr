@@ -29,6 +29,7 @@ from mujoco_warp_pbr._src import material
 from mujoco_warp_pbr._src import texture
 from mujoco_warp_pbr._src.types import LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext
+from mujoco_warp_pbr._src.types import RenderOrder
 from mujoco_warp_pbr._src.types import Tier
 from mujoco_warp_pbr._src.types import ToneMapper
 from mujoco_warp_pbr._src.types import UnsetMaterial
@@ -76,6 +77,7 @@ def create_render_context(
   envmap_rotation: float = 0.0,
   envmap_background: bool = True,
   use_skybox: bool = True,
+  render_order: int = RenderOrder.TILED,
   tier: int = Tier.REALTIME,
   path_samples: int = 64,
   max_depth: int = 4,
@@ -122,6 +124,7 @@ def create_render_context(
     envmap_background: Show the environment map where rays hit nothing.
     use_skybox: Without `envmap`, light the scene (physical light model) and fill the
       background with the model's skybox texture, if it has one.
+    render_order: RenderOrder assignment of pixels to threads (see RenderOrder).
     tier: Tier.REALTIME (direct lighting + split-sum IBL) or Tier.PATH (path tracing).
     path_samples: Path-traced samples per pixel (random sub-pixel positions).
     max_depth: Maximum path length in bounces (path-traced tier).
@@ -287,6 +290,7 @@ def create_render_context(
     max_layers=max_layers,
     has_reflection=has_reflection,
     unroll_lights=True,
+    render_order=int(render_order),
     max_unroll=6,
     tier=int(tier),
     path_samples=path_samples,
