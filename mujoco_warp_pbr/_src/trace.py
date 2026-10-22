@@ -15,23 +15,194 @@
 
 """Ray queries used by the renderer.
 
-`make_trace` returns the closest-hit and any-hit funcs the megakernel calls. The current
-backend is MuJoCo Warp's scene BVH + per-geom intersection (`cast_ray`), specialised on the
-geom types present in the scene. Other backends (own acceleration structures, hardware ray
-tracing) only need to provide funcs with the same signature.
+`Geometry` gathers every array a ray query reads. `make_trace` returns the closest-hit and
+any-hit funcs the megakernel calls. The current backend is MuJoCo Warp's scene BVH + per-geom
+intersection (`cast_ray`), specialised on the geom types present. Another backend (own
+acceleration structures, hardware ray tracing) only needs funcs with the same signatures.
 """
 
 from typing import Tuple
 
 import warp as wp
+from mujoco_warp import Data
+from mujoco_warp import Model
+from mujoco_warp import RenderContext
 from mujoco_warp._src.render import _make_cast_ray
 
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
-def make_trace(geom_ray_types: Tuple[int, ...]) -> Tuple[wp.Function, wp.Function]:
+
+@wp.struct
+class Hit:
+  """Closest-hit result.
+
+  Attributes:
+    geom_id: hit geom, -1 on a miss, -2 for flex (then mesh_id holds the flex id).
+    dist: distance along the (unit) ray direction.
+    normal: geometric normal in world frame.
+    bary_u: barycentric coordinate of the first vertex (meshes).
+    bary_v: barycentric coordinate of the second vertex (meshes).
+    face_id: triangle index within the mesh, -1 for primitives.
+    mesh_id: mesh id for meshes, flex id for flex hits.
+  """
+
+  geom_id: int
+  dist: float
+  normal: wp.vec3
+  bary_u: float
+  bary_v: float
+  face_id: int
+  mesh_id: int
+
+
+@wp.struct
+class Geometry:
+  """Model, data and BVH arrays read by ray queries and surface evaluation."""
+
+  # Model:
+  geom_type: wp.array[int]
+  geom_dataid: wp.array2d[int]
+  geom_matid: wp.array2d[int]
+  geom_size: wp.array2d[wp.vec3]
+  geom_rgba: wp.array2d[wp.vec4]
+  flex_vertadr: wp.array[int]
+  flex_edge: wp.array[wp.vec2i]
+  flex_radius: wp.array[float]
+  mat_rgba: wp.array2d[wp.vec4]
+  # Data:
+  geom_xpos: wp.array2d[wp.vec3]
+  geom_xmat: wp.array2d[wp.mat33]
+  flexvert_xpos: wp.array2d[wp.vec3]
+  # Acceleration structures:
+  bvh_id: wp.uint64
+  group_root: wp.array[int]
+  bvh_ngeom: int
+  bvh_nflexgeom: int
+  enabled_geom_ids: wp.array[int]
+  mesh_bvh_id: wp.array[wp.uint64]
+  hfield_bvh_id: wp.array[wp.uint64]
+  flex_rgba: wp.array[wp.vec4]
+  flex_geom_flexid: wp.array[int]
+  flex_geom_edgeid: wp.array[int]
+  flex_bvh_id: wp.array[wp.uint64]
+  flex_group_root: wp.array2d[int]
+
+
+def geometry(m: Model, d: Data, base: RenderContext) -> Geometry:
+  geo = Geometry()
+  geo.geom_type = m.geom_type
+  geo.geom_dataid = m.geom_dataid
+  geo.geom_matid = m.geom_matid
+  geo.geom_size = m.geom_size
+  geo.geom_rgba = m.geom_rgba
+  geo.flex_vertadr = m.flex_vertadr
+  geo.flex_edge = m.flex_edge
+  geo.flex_radius = m.flex_radius
+  geo.mat_rgba = m.mat_rgba
+  geo.geom_xpos = d.geom_xpos
+  geo.geom_xmat = d.geom_xmat
+  geo.flexvert_xpos = d.flexvert_xpos
+  geo.bvh_id = base.bvh_id
+  geo.group_root = base.group_root
+  geo.bvh_ngeom = base.bvh_ngeom
+  geo.bvh_nflexgeom = base.bvh_nflexgeom
+  geo.enabled_geom_ids = base.enabled_geom_ids
+  geo.mesh_bvh_id = base.mesh_bvh_id
+  geo.hfield_bvh_id = base.hfield_bvh_id
+  geo.flex_rgba = base.flex_rgba
+  geo.flex_geom_flexid = base.flex_geom_flexid
+  geo.flex_geom_edgeid = base.flex_geom_edgeid
+  geo.flex_bvh_id = base.flex_bvh_id
+  geo.flex_group_root = base.flex_group_root
+  return geo
+
+
+def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool) -> Tuple[wp.Function, wp.Function]:
   """Returns (trace_closest, trace_any) specialised on the geom types present.
 
-  Both have MuJoCo Warp's `cast_ray` signature and return
-  (geom_id, dist, normal, bary_u, bary_v, face_id, mesh_id); geom_id is -1 on a miss and -2 for
-  flex hits (mesh_id then holds the flex id). trace_any returns on the first hit within max_dist.
+  trace_closest(geo, worldid, origin, direction, max_dist) -> Hit
+  trace_any(geo, worldid, origin, direction, max_dist) -> bool, True if anything is hit before
+  max_dist.
   """
-  return _make_cast_ray(geom_ray_types, first_hit=False), _make_cast_ray(geom_ray_types, first_hit=True)
+  cast_closest = _make_cast_ray(geom_ray_types, first_hit=False)
+  cast_any = _make_cast_ray(geom_ray_types, first_hit=True)
+
+  @wp.func
+  def trace_closest(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> Hit:
+    geom_id, dist, normal, bary_u, bary_v, face_id, mesh_id = cast_closest(
+      geo.geom_type,
+      geo.geom_dataid,
+      geo.geom_matid,
+      geo.geom_size,
+      geo.geom_rgba,
+      geo.flex_vertadr,
+      geo.flex_edge,
+      geo.flex_radius,
+      geo.mat_rgba,
+      geo.geom_xpos,
+      geo.geom_xmat,
+      geo.flexvert_xpos,
+      geo.bvh_id,
+      geo.group_root[worldid],
+      worldid,
+      geo.bvh_ngeom,
+      geo.bvh_nflexgeom,
+      geo.enabled_geom_ids,
+      geo.mesh_bvh_id,
+      geo.hfield_bvh_id,
+      geo.flex_rgba,
+      geo.flex_geom_flexid,
+      geo.flex_geom_edgeid,
+      geo.flex_bvh_id,
+      geo.flex_group_root,
+      origin,
+      direction,
+      max_dist,
+      wp.static(cull_backfaces),
+    )
+    hit = Hit()
+    hit.geom_id = geom_id
+    hit.dist = dist
+    hit.normal = normal
+    hit.bary_u = bary_u
+    hit.bary_v = bary_v
+    hit.face_id = face_id
+    hit.mesh_id = mesh_id
+    return hit
+
+  @wp.func
+  def trace_any(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> bool:
+    geom_id, _dist, _normal, _u, _v, _face, _mesh = cast_any(
+      geo.geom_type,
+      geo.geom_dataid,
+      geo.geom_matid,
+      geo.geom_size,
+      geo.geom_rgba,
+      geo.flex_vertadr,
+      geo.flex_edge,
+      geo.flex_radius,
+      geo.mat_rgba,
+      geo.geom_xpos,
+      geo.geom_xmat,
+      geo.flexvert_xpos,
+      geo.bvh_id,
+      geo.group_root[worldid],
+      worldid,
+      geo.bvh_ngeom,
+      geo.bvh_nflexgeom,
+      geo.enabled_geom_ids,
+      geo.mesh_bvh_id,
+      geo.hfield_bvh_id,
+      geo.flex_rgba,
+      geo.flex_geom_flexid,
+      geo.flex_geom_edgeid,
+      geo.flex_bvh_id,
+      geo.flex_group_root,
+      origin,
+      direction,
+      max_dist,
+      wp.static(cull_backfaces),
+    )
+    return geom_id != -1
+
+  return trace_closest, trace_any

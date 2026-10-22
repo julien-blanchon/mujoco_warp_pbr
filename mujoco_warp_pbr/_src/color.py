@@ -80,7 +80,10 @@ def srgb_eotf(x: float) -> float:
 
 
 def make_display_transform(tone_mapper: int) -> wp.Function:
-  """Build exposed linear HDR -> display sRGB [0, 1], specialised on the tone mapper."""
+  """Build exposed linear HDR -> tone-mapped linear [0, 1], specialised on the tone mapper.
+
+  The result is still linear: average sub-pixel samples on it, then apply `srgb_oetf`.
+  """
 
   @wp.func
   def display_transform(color: wp.vec3) -> wp.vec3:
@@ -89,7 +92,6 @@ def make_display_transform(tone_mapper: int) -> wp.Function:
       c = tonemap_pbr_neutral(c)
     elif wp.static(tone_mapper == ToneMapper.ACES):
       c = tonemap_aces(c)
-    c = wp.min(wp.max(c, wp.vec3(0.0)), wp.vec3(1.0))
-    return wp.vec3(srgb_oetf(c[0]), srgb_oetf(c[1]), srgb_oetf(c[2]))
+    return wp.min(wp.max(c, wp.vec3(0.0)), wp.vec3(1.0))
 
   return display_transform

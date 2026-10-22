@@ -25,6 +25,7 @@ from mujoco_warp_pbr._src import color
 from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import lights
 from mujoco_warp_pbr._src import material
+from mujoco_warp_pbr._src import texture
 from mujoco_warp_pbr._src.types import LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import ToneMapper
@@ -62,6 +63,12 @@ def create_render_context(
   ev100: float = DEFAULT_EV100,
   unset_material: int = UnsetMaterial.GLTF,
   default_material: Optional[dict] = None,
+  use_textures: bool = True,
+  samples_per_pixel: int = 1,
+  specular_aa: bool = True,
+  shadow_samples: int = 1,
+  max_layers: int = 4,
+  enable_reflections: bool = True,
   render_hdr: bool = False,
 ) -> PbrRenderContext:
   """Creates a PBR render context on device.
@@ -89,12 +96,22 @@ def create_render_context(
     ev100: Camera exposure value for the physical light model.
     unset_material: UnsetMaterial policy for metallic / roughness left unset (-1).
     default_material: Optional {"metallic": .., "roughness": ..} applied to unset fields only.
+    use_textures: Sample material textures (all roles).
+    samples_per_pixel: Stratified sub-pixel samples per axis; N gives N×N rays per pixel.
+    specular_aa: Widen roughness by the normal variance across the pixel footprint.
+    shadow_samples: Shadow rays per light; > 1 gives soft shadows from the light's bulbradius.
+    max_layers: Translucent surfaces composited front to back along a camera ray.
+    enable_reflections: Trace one mirror ray for materials with MuJoCo reflectance > 0.
     render_hdr: Also write linear HDR radiance (before exposure and tone mapping) to `hdr_data`.
 
   Returns:
     The PBR render context.
   """
   _warn_unsupported(mjm)
+  if samples_per_pixel < 1:
+    raise ValueError("samples_per_pixel must be at least 1")
+  if shadow_samples < 1:
+    raise ValueError("shadow_samples must be at least 1")
   base = mjw.create_render_context(
     mjm,
     nworld=nworld,
@@ -143,6 +160,30 @@ def create_render_context(
 
   metallic, roughness, reflectance = material.resolve_geom_materials(mjm, unset_material, default_material)
 
+  # Only materials of rendered geoms decide which features the kernel is specialised on.
+  rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
+  rendered_mats = np.unique(mjm.geom_matid[rendered & (mjm.geom_matid >= 0)])
+  features = material.SurfaceFeatures(mjm, use_textures, specular_aa, rendered_mats)
+  used_tex = np.zeros(mjm.ntex, dtype=bool)
+  if features.textures:
+    ids = mjm.mat_texid[rendered_mats].ravel()
+    used_tex[ids[ids >= 0]] = True
+  textures, tex_size = texture.upload_textures(mjm, used_tex)
+
+  geom_alpha = np.where(
+    (mjm.geom_matid >= 0) & np.all(np.isclose(mjm.geom_rgba, [0.5, 0.5, 0.5, 1.0]), axis=1),
+    mjm.mat_rgba[np.maximum(mjm.geom_matid, 0), 3] if mjm.nmat else 1.0,
+    mjm.geom_rgba[:, 3],
+  )
+  has_transparency = bool(np.any((geom_alpha[rendered] > 0.0) & (geom_alpha[rendered] < 1.0))) or features.alpha_map
+  has_transparency = has_transparency or bool(mjm.nflex and np.any(mjm.flex_rgba[:, 3] < 1.0))
+  has_reflection = enable_reflections and bool(np.any(mjm.mat_reflectance[rendered_mats] > 0.0))
+  background_linear = np.where(
+    np.asarray(background_color[:3]) <= 0.04045,
+    np.asarray(background_color[:3]) / 12.92,
+    ((np.asarray(background_color[:3]) + 0.055) / 1.055) ** 2.4,
+  )
+
   ri = base.rgb_data.shape[1]
   return PbrRenderContext(
     base=base,
@@ -153,12 +194,24 @@ def create_render_context(
     geom_metallic=wp.array(metallic[None], dtype=float),
     geom_roughness=wp.array(roughness[None], dtype=float),
     geom_reflectance=wp.array(reflectance[None], dtype=float),
+    mat_reflectance=wp.array(np.asarray(mjm.mat_reflectance, dtype=np.float32).reshape(1, -1), dtype=float),
     light_intensity=wp.array(light_intensity[None], dtype=float),
     light_range=wp.array(np.asarray(mjm.light_range, dtype=np.float32)[None], dtype=float),
+    light_bulbradius=wp.array(np.asarray(mjm.light_bulbradius, dtype=np.float32)[None], dtype=float),
     headlight_intensity=float(headlight_intensity),
     exposure=wp.array([exposure], dtype=float),
     ambient_radiance=wp.array([ambient], dtype=wp.vec3),
     dfg_lut=ibl.build_dfg_lut(),
+    background_linear=wp.vec3(*background_linear),
+    textures=wp.array(textures, dtype=wp.Texture2D),
+    textures_registry=textures,
+    tex_size=wp.array(tex_size, dtype=wp.vec2),
+    features=features,
+    samples_per_pixel=samples_per_pixel,
+    shadow_samples=shadow_samples,
+    has_transparency=has_transparency,
+    max_layers=max_layers,
+    has_reflection=has_reflection,
     render_hdr=render_hdr,
     hdr_data=wp.zeros((nworld, ri if render_hdr else 1), dtype=wp.vec3h),
   )

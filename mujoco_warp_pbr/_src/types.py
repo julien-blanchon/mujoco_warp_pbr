@@ -83,12 +83,24 @@ class PbrRenderContext:
     geom_metallic: resolved metallic                                   (*, ngeom)
     geom_roughness: resolved perceptual roughness                      (*, ngeom)
     geom_reflectance: dielectric reflectance, F0 = 0.16 r²             (*, ngeom)
+    mat_reflectance: MuJoCo mirror reflectance per material            (*, nmat)
     light_intensity: resolved physical intensity (lux or candela)      (*, nlight)
     light_range: physical falloff radius                               (*, nlight)
+    light_bulbradius: radius of the light bulb for soft shadows        (*, nlight)
     headlight_intensity: resolved headlight illuminance (physical model)
     exposure: linear exposure multiplier                               (*,)
     ambient_radiance: constant environment radiance                    (*,)
     dfg_lut: split-sum DFG lookup table indexed by (NoV, perceptual roughness)
+    background_linear: linear display colour of rays that hit nothing
+    textures: material textures indexed by MuJoCo texture id
+    textures_registry: the wp.Texture2D objects behind `textures` (keeps them alive)
+    tex_size: texture (width, height)                                  (ntex,)
+    features: SurfaceFeatures the kernel is specialised on
+    samples_per_pixel: sub-pixel samples per axis (N×N per pixel)
+    shadow_samples: shadow rays per light (> 1 gives soft shadows from bulbradius)
+    has_transparency: whether any rendered material is translucent
+    max_layers: translucent layers composited per ray
+    has_reflection: whether any material has MuJoCo reflectance > 0
     render_hdr: whether linear HDR (pre-exposure, pre-tone-mapping) is written
     hdr_data: linear HDR radiance                                      (nworld, npixel)
     _megakernel: cached specialised render kernel
@@ -102,12 +114,24 @@ class PbrRenderContext:
   geom_metallic: wp.array2d[float]
   geom_roughness: wp.array2d[float]
   geom_reflectance: wp.array2d[float]
+  mat_reflectance: wp.array2d[float]
   light_intensity: wp.array2d[float]
   light_range: wp.array2d[float]
+  light_bulbradius: wp.array2d[float]
   headlight_intensity: float
   exposure: wp.array[float]
   ambient_radiance: wp.array[wp.vec3]
   dfg_lut: wp.Texture2D
+  background_linear: wp.vec3
+  textures: wp.array[wp.Texture2D]
+  textures_registry: list
+  tex_size: wp.array[wp.vec2]
+  features: Any
+  samples_per_pixel: int
+  shadow_samples: int
+  has_transparency: bool
+  max_layers: int
+  has_reflection: bool
   render_hdr: bool
   hdr_data: wp.array2d[wp.vec3h]
   _megakernel: Any = None

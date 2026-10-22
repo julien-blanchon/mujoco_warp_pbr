@@ -21,6 +21,8 @@ from typing import Tuple
 import mujoco
 import numpy as np
 import warp as wp
+from mujoco_warp import Data
+from mujoco_warp import Model
 
 from mujoco_warp_pbr._src.types import LightModel
 
@@ -33,6 +35,46 @@ LIGHT_IMAGE = int(mujoco.mjtLightType.mjLIGHT_IMAGE)
 
 # Physical spot lights use MuJoCo's cutoff as the outer cone; the inner cone is this fraction.
 SPOT_INNER_FRACTION = 0.75
+
+
+@wp.struct
+class Lights:
+  """Light arrays read by the shading code (batched ones indexed with worldid % shape[0])."""
+
+  # Model:
+  light_type: wp.array2d[int]
+  light_castshadow: wp.array2d[bool]
+  light_active: wp.array2d[bool]
+  light_attenuation: wp.array2d[wp.vec3]
+  light_cutoff: wp.array2d[float]
+  light_exponent: wp.array2d[float]
+  light_diffuse: wp.array2d[wp.vec3]
+  light_specular: wp.array2d[wp.vec3]
+  # Data:
+  light_xpos: wp.array2d[wp.vec3]
+  light_xdir: wp.array2d[wp.vec3]
+  # Render context:
+  light_intensity: wp.array2d[float]
+  light_range: wp.array2d[float]
+  light_bulbradius: wp.array2d[float]
+
+
+def lights(m: Model, d: Data, rc) -> Lights:
+  lit = Lights()
+  lit.light_type = m.light_type
+  lit.light_castshadow = m.light_castshadow
+  lit.light_active = m.light_active
+  lit.light_attenuation = m.light_attenuation
+  lit.light_cutoff = m.light_cutoff
+  lit.light_exponent = m.light_exponent
+  lit.light_diffuse = m.light_diffuse
+  lit.light_specular = m.light_specular
+  lit.light_xpos = d.light_xpos
+  lit.light_xdir = d.light_xdir
+  lit.light_intensity = rc.light_intensity
+  lit.light_range = rc.light_range
+  lit.light_bulbradius = rc.light_bulbradius
+  return lit
 
 
 def fallback_intensity(mjm: mujoco.MjModel, mjd: mujoco.MjData, light_id: int, exposure: float) -> float:
