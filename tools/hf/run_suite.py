@@ -73,12 +73,12 @@ def sync_assets(bucket: str, asset_dir: Path):
 def launch(bucket: str, flavor: str, run: str, image: str, timeout: str, suite_args: str) -> str:
   out = f"/data/results/{run}/{flavor}"
   script = (
-    "set -e; sh /data/code/tools/hf/bootstrap.sh; export PATH=$HOME/.local/bin:$PATH; cd /work/code; "
+    "set -eo pipefail; sh /data/code/tools/hf/bootstrap.sh; export PATH=$HOME/.local/bin:$PATH; cd /work/code; "
     f"mkdir -p {out}; uv run python benchmarks/suite.py --out {out} {suite_args} 2>&1 | tee {out}/log.txt"
   )
   job = run_job(
     image=image,
-    command=["sh", "-c", script],
+    command=["bash", "-c", script],
     flavor=flavor,
     timeout=timeout,
     env={"MJPBR_ASSET_DIR": "/data/assets", "MUJOCO_GL": "egl"},
