@@ -61,6 +61,17 @@ def test_lambertian_plane_point_light(scene):
   np.testing.assert_allclose(center, expected, rtol=2e-3)
 
 
+def test_hdr_holds_physical_radiance(scene):
+  """Sunlight-level radiance (beyond float16 range) is stored exactly in the HDR output."""
+  illuminance = 1.0e6
+  xml = _plane_xml(
+    'rgba="1 1 1 1" metallic="0" roughness="1" specular="0"',
+    f'<light type="directional" dir="0 0 -1" intensity="{illuminance}" castshadow="false"/>',
+  )
+  hdr = scene(xml, render_hdr=True).render().hdr()[0]
+  np.testing.assert_allclose(hdr[16, 16], illuminance / np.pi, rtol=2e-3)
+
+
 def test_fallback_directional_matches_diffuse_colour(scene):
   """Unset intensity: a white Lambertian plane facing the light shows the light's diffuse colour."""
   xml = _plane_xml(

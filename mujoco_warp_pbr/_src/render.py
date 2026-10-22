@@ -516,7 +516,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
 
     adr = out.rgb_adr[camid] + pixelid
     if wp.static(render_hdr):
-      out.hdr[worldid, adr] = wp.vec3h(hdr * (inv_aa * inv_aa))
+      out.hdr[worldid, adr] = hdr * (inv_aa * inv_aa)
     # Samples are averaged after tone mapping, then encoded.
     c = display * (inv_aa * inv_aa)
     out.rgb[worldid, adr] = pack_rgba_to_uint32(

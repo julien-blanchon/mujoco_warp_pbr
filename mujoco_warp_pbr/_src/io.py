@@ -323,5 +323,5 @@ def create_render_context(
     max_depth=max_depth,
     rr_depth=rr_depth,
     render_hdr=render_hdr,
-    hdr_data=wp.zeros((nworld, ri if render_hdr else 1), dtype=wp.vec3h),
+    hdr_data=wp.zeros((nworld, ri if render_hdr else 1), dtype=wp.vec3),
   )

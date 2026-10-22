@@ -209,5 +209,5 @@ class PbrRenderContext:
   max_depth: int
   rr_depth: int
   render_hdr: bool
-  hdr_data: wp.array2d[wp.vec3h]
+  hdr_data: wp.array2d[wp.vec3]
   _megakernel: Any = None

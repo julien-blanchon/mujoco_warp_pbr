@@ -504,7 +504,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     hdr = hdr / float(nsample)
     adr = out.rgb_adr[camid] + pixelid
     if wp.static(render_hdr):
-      out.hdr[worldid, adr] = wp.vec3h(hdr)
+      out.hdr[worldid, adr] = hdr
     c = display_transform(hdr * env.exposure[worldid % env.exposure.shape[0]])
     out.rgb[worldid, adr] = pack_rgba_to_uint32(
       srgb_oetf(c[0]) * 255.0 + 0.5, srgb_oetf(c[1]) * 255.0 + 0.5, srgb_oetf(c[2]) * 255.0 + 0.5, 255.0

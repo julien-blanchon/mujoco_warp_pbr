@@ -41,7 +41,7 @@ def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array3
 @wp.kernel
 def _extract_hdr(
   # In:
-  hdr_data: wp.array2d[wp.vec3h],
+  hdr_data: wp.array2d[wp.vec3],
   rgb_adr: wp.array[int],
   camera_index: int,
   # Out:
@@ -50,7 +50,7 @@ def _extract_hdr(
   worldid, pixelid = wp.tid()
   xid = pixelid % hdr_out.shape[2]
   yid = pixelid // hdr_out.shape[2]
-  hdr_out[worldid, yid, xid] = wp.vec3(hdr_data[worldid, rgb_adr[camera_index] + pixelid])
+  hdr_out[worldid, yid, xid] = hdr_data[worldid, rgb_adr[camera_index] + pixelid]
 
 
 def get_hdr(rc: PbrRenderContext, camera_index: int, hdr_out: wp.array3d[wp.vec3]):

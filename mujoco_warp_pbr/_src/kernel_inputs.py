@@ -72,7 +72,7 @@ class Outputs:
   rgb: wp.array2d[wp.uint32]
   depth: wp.array2d[float]
   seg: wp.array2d[wp.vec2i]
-  hdr: wp.array2d[wp.vec3h]
+  hdr: wp.array2d[wp.vec3]
 
 
 @wp.func
