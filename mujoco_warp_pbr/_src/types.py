@@ -111,6 +111,9 @@ class PbrRenderContext:
     has_transparency: whether any rendered material is translucent
     max_layers: translucent layers composited per ray
     has_reflection: whether any material has MuJoCo reflectance > 0
+    unroll_lights: unroll the per-light loop at compile time (else a runtime loop)
+    max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
+      are unrolled)
     render_hdr: whether linear HDR (pre-exposure, pre-tone-mapping) is written
     hdr_data: linear HDR radiance                                      (nworld, npixel)
     _megakernel: cached specialised render kernel
@@ -152,6 +155,8 @@ class PbrRenderContext:
   has_transparency: bool
   max_layers: int
   has_reflection: bool
+  unroll_lights: bool
+  max_unroll: int
   render_hdr: bool
   hdr_data: wp.array2d[wp.vec3h]
   _megakernel: Any = None

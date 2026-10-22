@@ -29,7 +29,9 @@ bench = [
     "flip-evaluator",
     "mitsuba",
     "pillow",
+    "newton",
     "pygltflib>=1.16.5",
+    "trimesh",
 ]
 
 [[tool.uv.index]]

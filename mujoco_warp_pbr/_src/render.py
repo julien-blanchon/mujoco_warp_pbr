@@ -68,6 +68,8 @@ class Cameras:
   nrender: int
   cam_res: wp.array[wp.vec2i]
   cam_id_map: wp.array[int]
+  # Runtime loop bounds keep the sample loop rolled (constant bounds would be unrolled).
+  samples_per_axis: int
 
 
 @wp.struct
@@ -82,6 +84,7 @@ class Environment:
   env_id: wp.array[int]
   env_intensity: wp.array[float]
   env_yaw: wp.array[float]
+  max_layers: int
 
 
 @wp.struct
@@ -115,6 +118,8 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   nlight = m.nlight
   use_shadows = rc.use_shadows
   shadow_samples = rc.shadow_samples
+  soft_shadows = shadow_samples > 1
+  unroll_lights = rc.unroll_lights
   shadow_light_fraction = rc.shadow_light_fraction
   headlight_active = base.headlight_active
   headlight_diffuse = base.headlight_diffuse
@@ -124,11 +129,9 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   znear = base.znear
   zfar = base.zfar
   render_hdr = rc.render_hdr
-  n_aa = rc.samples_per_pixel
-  nsamples = n_aa * n_aa
-  inv_nsamples = 1.0 / nsamples
   has_transparency = rc.has_transparency
   max_layers = rc.max_layers if has_transparency else 1
+  samples_per_axis = rc.samples_per_pixel
   has_reflection = rc.has_reflection
   has_env = rc.has_env
   env_background = rc.env_background
@@ -145,17 +148,18 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     normal: wp.vec3,
     l: wp.vec3,
     dist: float,
+    shadow_samples: int,
     seed: int,
   ) -> float:
     origin = point + normal * wp.static(_RAY_OFFSET)
     if light_type == wp.static(lights.LIGHT_DIRECTIONAL):
       return wp.where(trace_any(geo, worldid, origin, l, 1.0e8), wp.static(shadow_light_fraction), 1.0)
-    if wp.static(shadow_samples == 1):
+    if wp.static(not soft_shadows):
       return wp.where(trace_any(geo, worldid, origin, l, dist - 1.0e-3), wp.static(shadow_light_fraction), 1.0)
     # Soft shadows: sample the bulb's disc as seen from the shading point.
     t1, t2 = texture.orthonormal_basis(l)
     visible = float(0.0)
-    for s in range(wp.static(shadow_samples)):
+    for s in range(shadow_samples):
       u = _rand2(seed, s)
       r = bulb_radius * wp.sqrt(u[0])
       phi = wp.static(2.0 * wp.pi) * u[1]
@@ -163,7 +167,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       d = wp.length(to_target)
       if not trace_any(geo, worldid, origin, to_target / d, d - 1.0e-3):
         visible += 1.0
-    v = visible * wp.static(1.0 / float(shadow_samples))
+    v = visible / float(shadow_samples)
     return v + (1.0 - v) * wp.static(shadow_light_fraction)
 
   @wp.func
@@ -190,8 +194,10 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     normal: wp.vec3,
     view: wp.vec3,
     nov: float,
+    shadow_samples: int,
     seed: int,
   ) -> wp.vec3:
+    """Radiance from one light; `diffuse_color` already carries the (1 - E_spec) coupling."""
     l, dist, diffuse_scale, specular_scale = eval_light(
       light_type,
       light_pos,
@@ -212,7 +218,9 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     visibility = float(1.0)
     if wp.static(use_shadows):
       if light_castshadow:
-        visibility = light_visibility(geo, worldid, light_type, light_pos, bulb_radius, point, normal, l, dist, seed)
+        visibility = light_visibility(
+          geo, worldid, light_type, light_pos, bulb_radius, point, normal, l, dist, shadow_samples, seed
+        )
 
     h = wp.normalize(l + view)
     noh = wp.max(wp.dot(normal, h), 0.0)
@@ -220,6 +228,52 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     fr = wp.cw_mul(brdf.specular_lobe(f0, alpha, noh, nov, nol, loh), energy_comp)
     fd = diffuse_color * brdf.diffuse_lambert()
     return (wp.cw_mul(fd, diffuse_scale) + wp.cw_mul(fr, specular_scale)) * (nol * visibility)
+
+  @wp.func
+  def model_light(
+    geo: Geometry,
+    lit: lights.Lights,
+    worldid: int,
+    li: int,
+    diffuse_color: wp.vec3,
+    f0: wp.vec3,
+    alpha: float,
+    energy_comp: wp.vec3,
+    point: wp.vec3,
+    normal: wp.vec3,
+    view: wp.vec3,
+    nov: float,
+    seed: int,
+  ) -> wp.vec3:
+    """Radiance from MuJoCo light `li` (zero when inactive)."""
+    if not lit.light_active[worldid % lit.light_active.shape[0], li]:
+      return wp.vec3(0.0)
+    return shade_light(
+      geo,
+      worldid,
+      lit.light_type[worldid % lit.light_type.shape[0], li],
+      lit.light_castshadow[worldid % lit.light_castshadow.shape[0], li],
+      lit.light_xpos[worldid, li],
+      lit.light_xdir[worldid, li],
+      lit.light_diffuse[worldid % lit.light_diffuse.shape[0], li],
+      lit.light_specular[worldid % lit.light_specular.shape[0], li],
+      lit.light_attenuation[worldid % lit.light_attenuation.shape[0], li],
+      lit.light_cutoff[worldid % lit.light_cutoff.shape[0], li],
+      lit.light_exponent[worldid % lit.light_exponent.shape[0], li],
+      lit.light_intensity[worldid % lit.light_intensity.shape[0], li],
+      lit.light_range[worldid % lit.light_range.shape[0], li],
+      lit.light_bulbradius[worldid % lit.light_bulbradius.shape[0], li],
+      diffuse_color,
+      f0,
+      alpha,
+      energy_comp,
+      point,
+      normal,
+      view,
+      nov,
+      lit.shadow_samples,
+      seed + li * lit.shadow_samples,
+    )
 
   @wp.func
   def shade_surface(
@@ -236,14 +290,15 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   ) -> wp.vec3:
     """Outgoing radiance towards `view` (before exposure)."""
     pr, alpha = brdf.roughness_to_alpha(surface.perceptual_roughness)
-    diffuse_color = surface.base_color * (1.0 - surface.metallic)
     f0 = brdf.surface_f0(surface.base_color, surface.metallic, surface.reflectance)
     nov = wp.max(wp.dot(normal, view), 1.0e-4)
     dfg = ibl.sample_dfg(env.dfg_lut, nov, pr)
     energy_comp = brdf.energy_compensation(f0, dfg)
+    spec_albedo = brdf.specular_albedo(f0, dfg)
+    # Energy-conserving coupling: the diffuse lobe gets what the specular lobe does not reflect.
+    diffuse_color = brdf.coupled_diffuse(surface.base_color, surface.metallic, spec_albedo)
 
     # Image-based / ambient lighting through the split-sum terms (Filament).
-    spec_albedo = brdf.specular_albedo(f0, dfg)
     ambient = env.ambient_radiance[worldid % env.ambient_radiance.shape[0]]
     irradiance = ambient
     prefiltered = ambient
@@ -254,42 +309,18 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       irradiance = ambient + envmap.eval_sh9(env.env_sh, e, envmap.rotate_yaw(normal, -yaw)) * scale
       r = view - normal * (2.0 * wp.dot(view, normal))
       dominant = wp.normalize(-r * (1.0 - alpha * alpha) + normal * (alpha * alpha))
-      prefiltered = ambient + envmap.sample_prefiltered(env.env_prefiltered[e], dominant, yaw, pr) * scale
+      prefiltered = ambient + envmap.sample_specular(env.env_radiance[e], env.env_prefiltered[e], dominant, yaw, pr) * scale
     # Specular occlusion from ambient occlusion (Lagarde & de Rousiers 2014).
     ao = surface.occlusion
     spec_ao = wp.clamp(wp.pow(nov + ao, wp.pow(2.0, -16.0 * alpha - 1.0)) - 1.0 + ao, 0.0, 1.0)
-    radiance = (
-      wp.cw_mul(irradiance, wp.cw_mul(diffuse_color, wp.vec3(1.0) - spec_albedo)) * ao
-      + wp.cw_mul(prefiltered, wp.cw_mul(spec_albedo, energy_comp)) * spec_ao
-    )
+    radiance = wp.cw_mul(irradiance, diffuse_color) * ao + wp.cw_mul(prefiltered, wp.cw_mul(spec_albedo, energy_comp)) * spec_ao
 
-    for li in range(wp.static(nlight)):
-      if lit.light_active[worldid % lit.light_active.shape[0], li]:
-        radiance += shade_light(
-          geo,
-          worldid,
-          lit.light_type[worldid % lit.light_type.shape[0], li],
-          lit.light_castshadow[worldid % lit.light_castshadow.shape[0], li],
-          lit.light_xpos[worldid, li],
-          lit.light_xdir[worldid, li],
-          lit.light_diffuse[worldid % lit.light_diffuse.shape[0], li],
-          lit.light_specular[worldid % lit.light_specular.shape[0], li],
-          lit.light_attenuation[worldid % lit.light_attenuation.shape[0], li],
-          lit.light_cutoff[worldid % lit.light_cutoff.shape[0], li],
-          lit.light_exponent[worldid % lit.light_exponent.shape[0], li],
-          lit.light_intensity[worldid % lit.light_intensity.shape[0], li],
-          lit.light_range[worldid % lit.light_range.shape[0], li],
-          lit.light_bulbradius[worldid % lit.light_bulbradius.shape[0], li],
-          diffuse_color,
-          f0,
-          alpha,
-          energy_comp,
-          point,
-          normal,
-          view,
-          nov,
-          seed + li * wp.static(max(shadow_samples, 1)),
-        )
+    if wp.static(unroll_lights):
+      for li in range(wp.static(nlight)):
+        radiance += model_light(geo, lit, worldid, li, diffuse_color, f0, alpha, energy_comp, point, normal, view, nov, seed)
+    else:
+      for li in range(lit.nlight):
+        radiance += model_light(geo, lit, worldid, li, diffuse_color, f0, alpha, energy_comp, point, normal, view, nov, seed)
 
     if wp.static(headlight_active):
       radiance += shade_light(
@@ -315,6 +346,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
         normal,
         view,
         nov,
+        1,
         seed,
       )
 
@@ -377,7 +409,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     travelled = float(0.0)
     first = trace.Hit()
     first.geom_id = -1
-    for layer in range(wp.static(max_layers)):
+    for layer in range(int(wp.static(max_layers))):
       hit = trace_closest(geo, worldid, origin, direction, max_dist - travelled)
       if layer == 0:
         first = hit
@@ -413,7 +445,12 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
         break
     return radiance, first
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"fast_math": base.use_fast_math})
+  @wp.kernel(
+    module="unique",
+    enable_backward=False,
+    grid_stride=False,
+    module_options={"fast_math": base.use_fast_math, "max_unroll": rc.max_unroll},
+  )
   def render_megakernel(
     geo: Geometry,
     mats: Materials,
@@ -462,23 +499,25 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     # (orthographic), shared by the sub-pixel samples.
     d0, o0 = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, px, py, wp.static(znear))
     d1, o1 = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, px + 1, py, wp.static(znear))
-    spread = wp.length(d1 - d0) * wp.static(1.0 / float(n_aa))
-    width = wp.length(o1 - o0) * wp.static(1.0 / float(n_aa))
+    inv_aa = wp.static(1.0 / float(samples_per_axis))
+    spread = wp.length(d1 - d0) * inv_aa
+    width = wp.length(o1 - o0) * inv_aa
 
-    pixel_seed = seed + (worldid * wp.static(total_rays) + rayid) * wp.static(nsamples * 64)
+    n_aa = int(wp.static(samples_per_axis))
+    pixel_seed = seed + (worldid * wp.static(total_rays) + rayid) * (n_aa * n_aa * 64)
     exposure = env.exposure[worldid % env.exposure.shape[0]]
     display = wp.vec3(0.0)
     hdr = wp.vec3(0.0)
-    for s in range(wp.static(nsamples)):
+    for s in range(n_aa * n_aa):
       ray_dir_cam, ray_offset_cam = compute_ray(
         projection,
         fovy,
         sensorsize,
         intrinsic,
-        img_w * wp.static(n_aa),
-        img_h * wp.static(n_aa),
-        px * wp.static(n_aa) + s % wp.static(n_aa),
-        py * wp.static(n_aa) + s // wp.static(n_aa),
+        img_w * n_aa,
+        img_h * n_aa,
+        px * n_aa + s % n_aa,
+        py * n_aa + s // n_aa,
         wp.static(znear),
       )
       origin = cam_pos + cam_mat @ ray_offset_cam
@@ -512,9 +551,9 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
 
     adr = out.rgb_adr[camid] + pixelid
     if wp.static(render_hdr):
-      out.hdr[worldid, adr] = wp.vec3h(hdr * wp.static(inv_nsamples))
+      out.hdr[worldid, adr] = wp.vec3h(hdr * (inv_aa * inv_aa))
     # Samples are averaged after tone mapping, then encoded.
-    c = display * wp.static(inv_nsamples)
+    c = display * (inv_aa * inv_aa)
     out.rgb[worldid, adr] = pack_rgba_to_uint32(
       srgb_oetf(c[0]) * 255.0 + 0.5, srgb_oetf(c[1]) * 255.0 + 0.5, srgb_oetf(c[2]) * 255.0 + 0.5, 255.0
     )
@@ -533,6 +572,7 @@ def _cameras(m: Model, d: Data, rc: PbrRenderContext) -> Cameras:
   cams.nrender = rc.base.nrender
   cams.cam_res = rc.base.cam_res
   cams.cam_id_map = rc.base.cam_id_map
+  cams.samples_per_axis = rc.samples_per_pixel
   return cams
 
 
@@ -548,6 +588,7 @@ def _environment(rc: PbrRenderContext) -> Environment:
   env.env_id = rc.env_id
   env.env_intensity = rc.env_intensity
   env.env_yaw = rc.env_yaw
+  env.max_layers = rc.max_layers if rc.has_transparency else 1
   return env
 
 

@@ -1,0 +1,7 @@
+{"scene": "damaged_helmet", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.09344388544559479, "psnr": 24.043344566894618, "relmse": 0.4723103940486908}
+{"scene": "furnace", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.06107691675424576, "psnr": 26.641446877734573, "relmse": 0.0551481731235981}
+{"scene": "grid_env", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.12993140518665314, "psnr": 22.968046805952312, "relmse": 0.7791886329650879}
+{"scene": "grid_point", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.07550383359193802, "psnr": 28.507030404478925, "relmse": 0.021277211606502533}
+{"scene": "grid_sun", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.09554880112409592, "psnr": 26.8894771572757, "relmse": 0.03420645371079445}
+{"scene": "normal_tangent", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.09381873160600662, "psnr": 21.936735051621753, "relmse": 7.416310787200928}
+{"scene": "water_bottle", "integrator": "direct", "bsdf": "principled", "res": 256, "flip": 0.03379153087735176, "psnr": 34.87392931859826, "relmse": 0.005138339940458536}

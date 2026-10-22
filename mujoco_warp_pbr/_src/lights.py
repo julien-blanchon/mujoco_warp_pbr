@@ -57,6 +57,8 @@ class Lights:
   light_intensity: wp.array2d[float]
   light_range: wp.array2d[float]
   light_bulbradius: wp.array2d[float]
+  nlight: int
+  shadow_samples: int
 
 
 def lights(m: Model, d: Data, rc) -> Lights:
@@ -74,6 +76,8 @@ def lights(m: Model, d: Data, rc) -> Lights:
   lit.light_intensity = rc.light_intensity
   lit.light_range = rc.light_range
   lit.light_bulbradius = rc.light_bulbradius
+  lit.nlight = m.nlight
+  lit.shadow_samples = rc.shadow_samples
   return lit
 
 

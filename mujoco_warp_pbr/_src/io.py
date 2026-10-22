@@ -266,6 +266,8 @@ def create_render_context(
     has_transparency=has_transparency,
     max_layers=max_layers,
     has_reflection=has_reflection,
+    unroll_lights=True,
+    max_unroll=6,
     render_hdr=render_hdr,
     hdr_data=wp.zeros((nworld, ri if render_hdr else 1), dtype=wp.vec3h),
   )

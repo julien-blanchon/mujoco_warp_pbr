@@ -101,6 +101,16 @@ def specular_albedo(f0: wp.vec3, dfg: wp.vec2) -> wp.vec3:
 
 
 @wp.func
+def coupled_diffuse(base_color: wp.vec3, metallic: float, spec_albedo: wp.vec3) -> wp.vec3:
+  """Lambertian albedo weighted by the energy the specular lobe leaves, (1 - metallic)(1 - E).
+
+  Filament applies the (1 - E) factor to image-based lighting only; using it for every light
+  keeps direct and image-based lighting consistent with one energy-conserving BRDF.
+  """
+  return wp.cw_mul(base_color * (1.0 - metallic), wp.vec3(1.0) - spec_albedo)
+
+
+@wp.func
 def roughness_to_alpha(perceptual_roughness: float) -> Tuple[float, float]:
   """Clamps perceptual roughness and returns (perceptual_roughness, alpha)."""
   pr = wp.clamp(perceptual_roughness, wp.static(MIN_PERCEPTUAL_ROUGHNESS), 1.0)

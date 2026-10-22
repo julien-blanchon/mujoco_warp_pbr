@@ -226,6 +226,19 @@ def sample_prefiltered(stack: wp.Texture3D, direction: wp.vec3, yaw: float, perc
 
 
 @wp.func
+def sample_specular(
+  radiance: wp.Texture2D, stack: wp.Texture3D, direction: wp.vec3, yaw: float, perceptual_roughness: float
+) -> wp.vec3:
+  """Prefiltered radiance; below the first stack level blends in the full-resolution map."""
+  blurred = sample_prefiltered(stack, direction, yaw, perceptual_roughness)
+  t = perceptual_roughness * (float(stack.depth) - 1.0)
+  if t >= 1.0:
+    return blurred
+  sharp = sample_radiance(radiance, direction, yaw, 0.0)
+  return sharp * (1.0 - t) + blurred * t
+
+
+@wp.func
 def sample_radiance(radiance: wp.Texture2D, direction: wp.vec3, yaw: float, lod: float) -> wp.vec3:
   c = wp.texture_sample(radiance, direction_to_uv(direction, yaw), dtype=wp.vec4, lod=wp.max(lod, 0.0))
   return wp.vec3(c[0], c[1], c[2])

@@ -81,14 +81,20 @@ def _dfg_lut(
   lut_out[j, i, 1] = y * inv_n
 
 
-def build_dfg_lut(size: int = DFG_LUT_SIZE, nsample: int = DFG_LUT_SAMPLES) -> wp.Texture2D:
-  """Precomputes Filament's multiscatter DFG table as a bilinear 2-channel texture.
+def dfg_lut_array(size: int = DFG_LUT_SIZE, nsample: int = DFG_LUT_SAMPLES) -> wp.array3d[float]:
+  """Filament's multiscatter DFG table (size, size, 2) indexed [perceptual roughness, NoV].
 
   Channel x = ∫ V·Fc, channel y = ∫ V, so the specular albedo is mix(x, y, f0) and
   the multiscatter compensation is 1 + f0 (1 / y − 1).
   """
   lut = wp.zeros((size, size, 2), dtype=float)
   wp.launch(_dfg_lut, dim=(size, size), inputs=[nsample], outputs=[lut])
+  return lut
+
+
+def build_dfg_lut(size: int = DFG_LUT_SIZE, nsample: int = DFG_LUT_SAMPLES) -> wp.Texture2D:
+  """The DFG table as a bilinear 2-channel texture sampled at (NoV, perceptual roughness)."""
+  lut = dfg_lut_array(size, nsample)
   return wp.Texture2D(
     lut,
     filter_mode=wp.TextureFilterMode.LINEAR,

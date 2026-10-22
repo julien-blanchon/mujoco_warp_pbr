@@ -65,7 +65,25 @@ def _parse_value(text: str):
     return text
 
 
-def build(args, mjm: mujoco.MjModel):
+def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
+  if args.renderer == "mujoco":
+    # MuJoCo's OpenGL renderer draws one image at a time: time a loop over the worlds.
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    renderer = mujoco.Renderer(mjm, args.res, args.res)
+    cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
+
+    def render_cpu():
+      for _ in range(args.nworld):
+        renderer.update_scene(mjd, camera=cam)
+        renderer.render()
+
+    return None, None, renderer, None, render_cpu
+  if args.renderer == "newton":
+    from references import newton_camera
+
+    rig = newton_camera.NewtonCamera(spec, mjm, args.nworld, args.res, depth=args.depth)
+    return None, None, rig, None, rig.render
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
@@ -109,6 +127,16 @@ def randomize(m, rc, nworld: int, seed: int = 0):
     rc.env_yaw = wp.array(rng.uniform(0, 2 * np.pi, nworld).astype(np.float32), dtype=float)
 
 
+def time_loop(step, iters: int, repeats: int) -> list[float]:
+  times = []
+  for _ in range(repeats):
+    start = time.perf_counter()
+    for _ in range(iters):
+      step()
+    times.append((time.perf_counter() - start) / iters)
+  return times
+
+
 def time_graph(step, iters: int, repeats: int) -> list[float]:
   step()  # compile and warm up outside the capture
   wp.synchronize()
@@ -129,7 +157,7 @@ def time_graph(step, iters: int, repeats: int) -> list[float]:
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--scene", default="material_grid", choices=sorted(scenes.SCENES))
-  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp"])
+  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "mujoco"])
   parser.add_argument("--nworld", type=int, default=1024)
   parser.add_argument("--res", type=int, default=64)
   parser.add_argument("--depth", action="store_true")
@@ -148,15 +176,19 @@ def main():
     sys.exit(f"GPU busy ({before}); rerun with --allow-busy to benchmark anyway")
 
   group, make = scenes.SCENES[args.scene]
-  mjm = make()
-  m, d, rc, base, step = build(args, mjm)
+  spec = make()
+  mjm = spec.compile()
+  m, d, rc, base, step = build(args, mjm, spec)
   if args.randomize:
     randomize(m, rc, args.nworld)
   jit_start = time.perf_counter()
   step()
   wp.synchronize()
   jit = time.perf_counter() - jit_start
-  times = time_graph(step, args.iters, args.repeats)
+  if args.renderer == "mujoco":
+    times = time_loop(step, args.iters, args.repeats)
+  else:
+    times = time_graph(step, args.iters, args.repeats)
   median = float(np.median(times))
   frames = args.nworld  # one camera
   row = {
@@ -188,7 +220,7 @@ def main():
   if args.out:
     with args.out.open("a") as f:
       f.write(json.dumps(row) + "\n")
-  if args.save_image:
+  if args.save_image and args.renderer != "newton":
     from PIL import Image
 
     out = wp.zeros((args.nworld, args.res, args.res), dtype=wp.vec3)

@@ -44,7 +44,7 @@ _SRGB_TABLE = np.where(
 ).astype(np.float16)
 
 
-def _is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
+def is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
   colorspace = int(mjm.tex_colorspace[tex_id])
   if colorspace == int(mujoco.mjtColorSpace.mjCOLORSPACE_SRGB):
     return True
@@ -76,7 +76,7 @@ def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> Tuple[list, np.nda
       rgba[..., :3] = data
     else:
       rgba[..., :nc] = data
-    if _is_srgb(mjm, t):
+    if is_srgb(mjm, t):
       texels = np.concatenate([_SRGB_TABLE[rgba[..., :3]], (rgba[..., 3:] / 255.0).astype(np.float16)], axis=-1)
     else:
       texels = rgba

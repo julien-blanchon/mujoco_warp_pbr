@@ -15,8 +15,9 @@
 
 """Benchmark scenes.
 
-Each scene is a function returning a compiled mujoco.MjModel with one camera named "cam". Scenes
-built from downloaded assets read them from $MJPBR_ASSET_DIR (see tools/fetch_assets.py).
+Each scene is a function returning a mujoco.MjSpec with one camera named "cam" (compile it for
+MuJoCo; `to_xml()` feeds other renderers). Scenes built from downloaded assets read them from
+$MJPBR_ASSET_DIR (see tools/fetch_assets.py).
 
 Groups: "material" (correctness, group 1), "asset" (asset-heavy PBR, group 3) and "robot"
 (robotics throughput, group 2).
@@ -35,7 +36,7 @@ def asset_dir() -> Path:
   return Path(os.environ.get("MJPBR_ASSET_DIR", Path.home() / ".cache" / "mujoco_warp_pbr"))
 
 
-def material_grid(n: int = 7) -> mujoco.MjModel:
+def material_grid(n: int = 7) -> mujoco.MjSpec:
   """n × n spheres: metallic increases bottom to top, roughness left to right."""
   mats, geoms = [], []
   spacing = 0.22
@@ -46,7 +47,7 @@ def material_grid(n: int = 7) -> mujoco.MjModel:
       x, z = (j - (n - 1) / 2) * spacing, 0.12 + i * spacing
       geoms.append(f'<geom type="sphere" size="0.09" pos="{x:.3f} 0 {z:.3f}" material="m{i}_{j}"/>')
   height = 0.12 + (n - 1) * spacing
-  return mujoco.MjModel.from_xml_string(f"""
+  return mujoco.MjSpec.from_string(f"""
 <mujoco model="material_grid">
   <visual><headlight ambient="0.2 0.2 0.2" diffuse="0.3 0.3 0.3" specular="0.3 0.3 0.3"/></visual>
   <asset>
@@ -63,7 +64,7 @@ def material_grid(n: int = 7) -> mujoco.MjModel:
 """)
 
 
-def primitives() -> mujoco.MjModel:
+def primitives() -> mujoco.MjSpec:
   """MuJoCo Warp's render benchmark layout: 50 primitives on a table, flat materials."""
   bodies = []
   for kind, size, z, rgba in [
@@ -74,7 +75,7 @@ def primitives() -> mujoco.MjModel:
       for j in range(5):
         x, y = 0.6 + 0.1 * i, -0.4 + 0.2 * j
         bodies.append(f'<geom type="{kind}" size="{size}" pos="{x:.2f} {y:.2f} {z}" rgba="{rgba}"/>')
-  return mujoco.MjModel.from_xml_string(f"""
+  return mujoco.MjSpec.from_string(f"""
 <mujoco model="primitives">
   <visual><map znear="0.01" zfar="200"/></visual>
   <asset>
@@ -92,10 +93,10 @@ def primitives() -> mujoco.MjModel:
 """)
 
 
-def khronos(model: str, extent: float = 1.0) -> Callable[[], mujoco.MjModel]:
+def khronos(model: str, extent: float = 1.0) -> Callable[[], mujoco.MjSpec]:
   """A converted Khronos sample model on a floor (requires tools/fetch_assets.py)."""
 
-  def scene() -> mujoco.MjModel:
+  def scene() -> mujoco.MjSpec:
     path = asset_dir() / "mjcf" / model / f"{model}.xml"
     if not path.exists():
       raise FileNotFoundError(f"{path} missing: run tools/fetch_assets.py")
@@ -108,7 +109,7 @@ def khronos(model: str, extent: float = 1.0) -> Callable[[], mujoco.MjModel]:
     world.add_light(name="sun", type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL, dir=[-0.4, 0.6, -0.7], castshadow=True)
     world.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[3, 3, 0.1], material="floor")
     world.add_camera(name="cam", pos=[0, -1.7 * extent, 0.55 * extent], xyaxes=[1, 0, 0, 0, 0.15, 1], fovy=45)
-    return spec.compile()
+    return spec
 
   return scene
 
