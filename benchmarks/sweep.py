@@ -21,6 +21,8 @@ Presets:
            jitter (identical worlds would overstate ray coherence). The score is the geometric
            mean of camera-frames/s.
   compare: mujoco_warp_pbr vs mujoco_warp (shadows on) vs Newton on the same scenes and sizes.
+  scaling: frames/s against batch size (1 to 32768 worlds at 64², 1 to 8192 at 128²) for
+           mujoco_warp_pbr and mujoco_warp (shadows on).
 
 Usage:
   python benchmarks/sweep.py --preset score --out results/score.jsonl [--label NAME]
@@ -66,6 +68,14 @@ def configurations(preset: str) -> list[list[str]]:
         configs.append([*size, "--renderer", "pbr", *_envmap_option()])
         configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
         configs.append([*size, "--renderer", "newton"])
+  elif preset == "scaling":
+    sizes = [(n, 64) for n in (1, 4, 16, 64, 256, 1024, 4096, 16384, 32768)]
+    sizes += [(n, 128) for n in (1, 16, 256, 1024, 4096, 8192)]
+    for scene in SCORE_SCENES:
+      for nworld, res in sizes:
+        size = ["--scene", scene, "--nworld", str(nworld), "--res", str(res)]
+        configs.append([*size, "--renderer", "pbr", *_envmap_option()])
+        configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
   else:
     raise ValueError(preset)
   return configs
@@ -78,7 +88,7 @@ def score(rows: list[dict]) -> float:
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--preset", choices=["score", "compare"], default="score")
+  parser.add_argument("--preset", choices=["score", "compare", "scaling"], default="score")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--label", default="", help="tag stored with every row (e.g. an experiment name)")
   parser.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="arguments appended to every bench.py call")

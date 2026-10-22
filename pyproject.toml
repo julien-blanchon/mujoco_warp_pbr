@@ -53,7 +53,7 @@ mujoco-warp = {git = "https://github.com/google-deepmind/mujoco_warp", rev = "6c
 [tool.ruff]
 line-length = 128
 indent-width = 2
-extend-exclude = ["context", "*.ipynb"]
+extend-exclude = ["context", "*.ipynb", "research/optix_poc"]
 
 [tool.ruff.lint]
 select = ["D", "I", "W", "F401"]

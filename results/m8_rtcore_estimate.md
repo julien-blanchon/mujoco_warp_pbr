@@ -43,15 +43,17 @@ Which k is realistic:
 
 ## Caveats
 
-- **Batching.** Thousands of worlds need one TLAS per world or one instanced TLAS over every
-  world, refitted every step. Madrona chose software traversal even on RT-core GPUs for this
-  reason: "poor throughput under the load of constructing many small top-level BVHs".
-  Measure it before assuming k.
+- **Batching (measured since, see `research/web/optix_warp.md`).** One OptiX IAS per world costs
+  60–107 ms per step at 4096 worlds (host-bound builds that can't go in a CUDA graph), which is the
+  problem Madrona describes. A single IAS over all worlds, with a shared mesh GAS and worlds kept
+  apart by spatial offsets, refits in 0.04–0.18 ms, on par with MuJoCo Warp's grouped-BVH refit.
+  It costs 5–10% slower traversal and requires clipping every ray to its world's cell.
 - **Different silicon.** RT-core parts (RTX, L40) have other SM counts and memory systems. GH200's
   HBM bandwidth helps the shading and texture side, which this estimate holds fixed.
-- **Architecture.** OptiX calls (`optixTrace`) run only inside an OptiX pipeline launch, not
-  inside a Warp kernel. An RT backend therefore needs the megakernel as an OptiX raygen program,
-  or a wavefront split (Warp generates and shades, OptiX traces), which brings back queue traffic.
+- **Architecture (verified since).** `optixTrace` runs only inside an OptiX launch, but Warp 1.18's
+  experimental external-compilation API compiles Warp kernels into OptiX raygen, hit, miss and
+  intersection programs. The megakernel can therefore become the raygen without being rewritten
+  in CUDA; the constraints are one parameter struct and no `wp.tid()`.
 - **The seam exists.** All traversal goes through `trace.make_trace` (`trace_closest` /
   `trace_any`), so shading code needs no change. The cost is the launch model, not the shading.
 
@@ -59,6 +61,7 @@ Which k is realistic:
 
 - Keep the software megakernel as the default; it is the only option on Hopper and Grace-Hopper
   systems.
-- An OptiX backend is worth prototyping only for mesh-heavy workloads on RTX or L40 hardware.
-  Do it as a wavefront variant that reuses the same shading functions, and first measure per-world
-  TLAS refit throughput at 4096 worlds.
+- An OptiX backend is feasible (proof of concept in `research/optix_poc/`) and worth building for
+  mesh-heavy workloads on RTX or L40 hardware: the megakernel as a Warp-authored raygen, a single
+  IAS over all worlds, and `trace.make_trace` as the swap point. Measure on RT-core hardware
+  before committing to it.

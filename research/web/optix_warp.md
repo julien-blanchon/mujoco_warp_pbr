@@ -1,0 +1,121 @@
+# OptiX from Warp: feasibility for an RT-core backend
+
+Date: 2026-10-22.
+
+**Setup.** GH200 (sm_90, no RT cores; OptiX runs its traversal on the SMs), driver 610.57,
+OptiX 9.1 headers (github.com/NVIDIA/optix-dev), PyOptiX 9.1.0 built from
+github.com/NVIDIA/otk-pyoptix, warp-lang 1.18.0. Proof-of-concept code is in
+[`../optix_poc/`](../optix_poc/README.md).
+
+## 1. Warp kernels as OptiX programs: works
+
+Warp 1.18 ships an experimental external-compilation API designed with OptiX as its first
+consumer (design doc: `warp/design/external-compilation-extensions.md`):
+- `wp.build_experimental.add_builtin` / `add_native_type`, and `wp.ModuleBuildOptions` for
+  include directories and a CUDA preamble;
+- `@wp.kernel(entry_point_abi="external_constant_params", name="__raygen__x")`: an
+  `extern "C"` entry point reading one struct from the `__constant__` symbol `params`, which is
+  OptiX's launch-parameter convention;
+- `wp.compile_aot_module(use_ptx=True, strip_hash=True)`, which returns the PTX paths.
+
+**What was verified:**
+- Raygen, miss, closest-hit, any-hit and intersection programs can all be written as Warp kernels.
+- A 256² depth image over an IAS of the DamagedHelmet triangle GAS plus a custom-sphere GAS:
+  - hit codes agree 100% with a Warp reference (`mesh_query_ray` plus analytic spheres);
+  - max |Δt| is 5e-4;
+  - the OptiX validation layer reports no errors.
+- An any-hit cutout program works.
+- `wp.texture_sample` and `wp.mesh_query_ray` work inside a raygen, so hybrid software/RT
+  traversal is possible.
+
+**Pattern:**
+- **Device glue.** `optixTrace` is variadic and takes payloads by reference, so it can't be
+  registered as a builtin directly. A small header wraps it with fixed payload counts that are
+  returned packed (e.g. `vec2(t, prim)`), plus one-liners for
+  `optixGetLaunchIndex`, `optixSetPayload_N`, `optixGetRayTmax`, primitive index, barycentrics,
+  object-space ray and report/ignore intersection. These are registered with `add_builtin`, and
+  the header is included through `extra_cuda_preamble`.
+- **Programs.** All programs in a module take the same single `@wp.struct` (OptiX `params`), which
+  holds the traversable handle, the Warp output arrays and the scene data.
+- **Indexing.** `wp.tid()` is replaced by the launch-index builtin.
+- **Host side.** PyOptiX creates the context on Warp's CUDA context and builds the pipeline (launch
+  params variable `params`, SBT). The params buffer holds the struct's raw bytes, and launches
+  run on Warp's stream.
+- **Instances.** `OptixInstance` (80 B) can be a `@wp.struct`, so a Warp kernel writes the instance
+  transforms each step.
+
+**Gotchas:**
+- Include only `<optix_device.h>`, with `#define OPTIX_INCLUDE_COOPERATIVE_VECTOR 0`, because
+  `<optix.h>` needs `cuda_fp16.h` / `cuda.h`, which Warp's NVRTC setup lacks.
+- With `strip_hash=True`, AOT compilation silently reuses an existing PTX file of the same name in
+  `module_dir`. Compile into a fresh directory.
+- Kernel-level `module_options=` requires `module="unique"`. Use `wp.set_module_options` instead.
+- The entry-point ABI forbids `wp.tid()`, shared-memory tiles, backward passes and multiple
+  arguments.
+- OptiX build-input arrays must stay alive until the build completes.
+
+## 2. Batching thousands of worlds: one IAS over all worlds
+
+Measured with 4096 worlds and a shared DamagedHelmet GAS (15k triangles). Median of 7 runs on an
+idle GPU.
+
+| layout | 2 instances/world (8k) | 10/world (41k) | 50/world (205k) |
+| --- | --- | --- | --- |
+| one IAS over all worlds, refit | 0.04–0.05 ms | 0.065 ms | 0.17 ms |
+| same, full rebuild (fast-build / fast-trace) | 0.20 / 0.41 ms | 0.26 / 0.59 ms | 0.49 / 0.91 ms |
+| one IAS per world, refit (4096 builds) | 60–72 ms | 76–78 ms | 105 ms |
+| MuJoCo Warp grouped `wp.Bvh` refit today | 0.04 ms | 0.05 ms | 0.06 ms |
+
+- **One IAS per world doesn't work.** Each `optixAccelBuild` call costs 15–23 µs of mostly host
+  overhead, OptiX 9.1 has no batched IAS build, and CUDA-graph capture of many builds fails
+  (CUDA errors 900/905/907).
+- **A two-level hierarchy (top IAS over per-world IASes) doesn't help.** OptiX cannot start
+  traversal at a subtree, which is what MuJoCo Warp's `group_root` does in software.
+- **Recommended:** one IAS over all worlds, rebuilt or refitted every step from transforms written
+  by a Warp kernel; one GAS per mesh or height field, shared by all worlds; `instanceId` =
+  `world · ngeom + geom`.
+- **The catch with one IAS:** worlds must be separated spatially, since visibility masks have only
+  8 bits. Every ray, shadow rays included, must have its tmax clipped to its world's cell.
+  Traversal is 5–10% slower than per-world IASes, and precision drops with large offsets (7e-4 of
+  pixels off by more than 1 mm at offsets up to 1.3 km). Using a centred 3D grid of cells should
+  reduce this (unverified).
+
+## 3. Traversal throughput on GH200 (software vs software; not RTX)
+
+16.8M primary rays (4096 worlds × 64²):
+
+| per world | Warp `mesh_query_ray` | OptiX bare GAS | MuJoCo Warp-style query | OptiX IAS |
+| --- | --- | --- | --- | --- |
+| 1 helmet | 6.3 ms | 6.8 ms | 8.9 ms | 7.4–8.1 ms |
+| 10 helmets | – | – | 48.3 ms | 33–35 ms |
+
+Without RT cores OptiX is no faster on a bare mesh. With instancing its two-level traversal beats
+the MuJoCo Warp-style query by 1.2–1.45×. Hardware gains on RTX remain unmeasured.
+
+## 4. What an RT backend would change
+
+- **`trace.py`:** a second `make_trace` with the same `trace_closest` / `trace_any` signatures, built
+  on trace builtins.
+  - The `Hit` is rebuilt from payload registers: t, instance ID → geom/mesh, primitive → face,
+    barycentrics.
+  - Shadow rays use terminate-on-first-hit with closest-hit disabled.
+- **Geometry:**
+  - meshes and height fields: shared triangle GASes;
+  - box, capsule, cylinder, ellipsoid, plane and SDF: custom-primitive GASes whose intersection
+    programs are Warp kernels reusing MuJoCo Warp's `ray_*` functions;
+  - flex: per-world GAS updates, or software traversal inside the raygen.
+- **`render.py` / `pathtrace.py`:** the megakernel becomes the raygen.
+  - `geo, mats, lit, cams, env, out` merge into one params struct (about 5 KB, under the 64 KB
+    constant-memory limit).
+  - `wp.tid()` becomes the launch index; `RenderOrder` and `block_dim` stop applying.
+  - `wp.launch` becomes `optixLaunch` with a cached pipeline per specialised kernel.
+- **Per step:** an instance-transform kernel plus an IAS refit, replacing `mjw.refit_bvh`.
+
+## 5. Open risks
+
+- No RT-core hardware was available to measure on.
+- The full megakernel as a raygen is untested: OptiX compile time, register pressure, stack size,
+  and many trace call sites.
+- The single-IAS cell clipping and precision issues above.
+- The experimental Warp API: process-global registration, not reload-safe.
+- Launch dimensions are limited to about 2^30 rays (unverified).
