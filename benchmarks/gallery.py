@@ -18,6 +18,7 @@
   mujoco      MuJoCo's OpenGL renderer
   mjwarp      MuJoCo Warp's ray-traced Lambert / Phong renderer
   newton      Newton's SensorCamera (the scene imported into Newton)
+  newton_rtx  Newton's ViewerRTX: NVIDIA Omniverse RTX (RTX GPU, newton[rtx]; own "studio" lighting)
   pbr         mujoco_warp_pbr real-time tier
   pbr_path    mujoco_warp_pbr path-traced tier
   mitsuba     Mitsuba 3 path tracer with the renderer's BRDF (reference)
@@ -57,6 +58,7 @@ LABELS = {
   "mujoco": "MuJoCo (OpenGL)",
   "mjwarp": "MuJoCo Warp",
   "newton": "Newton SensorCamera",
+  "newton_rtx": "Newton RTX (ovrtx)",
   "pbr": "PBR real-time",
   "pbr_path": "PBR path-traced",
   "mitsuba": "Mitsuba 3 (reference)",
@@ -123,6 +125,14 @@ class Gallery:
       from references import newton_camera
 
       self.newton = newton_camera.NewtonCamera(self.spec, self.mjm, 1, res)
+    self.rtx = None
+    if "newton_rtx" in panels and self.spec is not None:
+      try:
+        from references import newton_rtx
+
+        self.rtx = newton_rtx.NewtonRtxCamera(self.spec, self.mjm, res)
+      except Exception as e:  # needs an RTX GPU and newton[rtx]
+        print(f"newton_rtx panel disabled: {e}")
     self.mitsuba = "mitsuba" in panels
     if self.mitsuba:
       import mitsuba as mi
@@ -157,6 +167,11 @@ class Gallery:
       self.newton.render()
       c = self.newton.color.numpy()[0]
       out["newton"] = np.stack([(c >> s) & 0xFF for s in (0, 8, 16)], axis=-1).astype(np.float32) / 255.0
+    if self.rtx is not None:
+      _orbit(self.rtx.mjm, self.cam, self.pos0, self.quat0, angle)
+      self.rtx.update_camera()
+      self.rtx.render()
+      out["newton_rtx"] = self.rtx.image()
     m = mjw.put_model(self.mjm)
     d = mjw.put_data(self.mjm, self.mjd)
     for name, rc in (("pbr", self.realtime), ("pbr_path", self.path)):

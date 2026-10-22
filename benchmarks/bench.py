@@ -24,8 +24,9 @@ Usage:
     [--renderer pbr|mjwarp|newton|mujoco|mitsuba] [--refit] [--repeats 5] [--iters 20]
     [--out results.jsonl] [--save-image img.png] [--set KEY=VALUE]
 
-MuJoCo's OpenGL renderer and Mitsuba render one image at a time. Their throughput does not depend
-on the batch size, so they time a loop over min(nworld, --sequential-frames) images.
+MuJoCo's OpenGL renderer, Newton's ViewerRTX and Mitsuba render one image at a time. Their
+throughput does not depend on the batch size, so they time a loop over min(nworld,
+--sequential-frames) images.
 """
 
 import argparse
@@ -121,6 +122,17 @@ def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
   if args.renderer == "mitsuba":
     extra = {k: _parse_value(v) for k, v in (kv.split("=", 1) for kv in args.set)}
     return build_mitsuba(args, mjm, extra)
+  if args.renderer == "newton_rtx":
+    # Newton's ViewerRTX (Omniverse RTX): one image per call, like MuJoCo's OpenGL renderer.
+    from references import newton_rtx
+
+    rig = newton_rtx.NewtonRtxCamera(spec, mjm, args.res)
+
+    def render_rtx():
+      for _ in range(sequential_frames(args)):
+        rig.render()
+
+    return None, None, rig, None, render_rtx
   if args.renderer == "newton":
     from references import newton_camera
 
@@ -228,7 +240,9 @@ def time_graph(step, iters: int, repeats: int) -> list[float]:
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--scene", default="material_grid", choices=sorted(scenes.SCENES))
-  parser.add_argument("--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "newton_pbr", "mujoco", "mitsuba"])
+  parser.add_argument(
+    "--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "newton_pbr", "newton_rtx", "mujoco", "mitsuba"]
+  )
   parser.add_argument("--nworld", type=int, default=1024)
   parser.add_argument("--res", type=int, default=64)
   parser.add_argument("--depth", action="store_true")
@@ -272,7 +286,7 @@ def main():
     Path(directory, str(os.getpid())).touch()
     while len(os.listdir(directory)) < int(count):
       time.sleep(0.05)
-  sequential = args.renderer in ("mujoco", "mitsuba")
+  sequential = args.renderer in ("mujoco", "mitsuba", "newton_rtx")
   if sequential:
     times = time_loop(step, args.iters, args.repeats)
   else:

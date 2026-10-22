@@ -20,6 +20,7 @@ Renderers:
   pbr_path     mujoco_warp_pbr, path-traced tier (16 spp, denoised)
   newton_pbr   mujoco_warp_pbr through newton_pbr.SensorPbrCamera (scene imported into Newton)
   newton       Newton's SensorCamera (scene imported into Newton)
+  newton_rtx   Newton's ViewerRTX: NVIDIA Omniverse RTX (RTX GPUs, newton[rtx]; one image at a time)
   mjwarp       MuJoCo Warp's renderer (shadows on)
   mujoco       MuJoCo's OpenGL renderer (one image at a time)
   mitsuba      Mitsuba 3 path tracer, 16 spp (one image at a time; reference quality at higher spp)
@@ -61,6 +62,7 @@ RENDERERS = {
   "newton": ["--renderer", "newton"],
   "mjwarp": ["--renderer", "mjwarp", "--set", "use_shadows=true"],
   "mujoco": ["--renderer", "mujoco", *_SEQUENTIAL],
+  "newton_rtx": ["--renderer", "newton_rtx", *_SEQUENTIAL],
   "mitsuba": ["--renderer", "mitsuba", "--mitsuba-spp", "16", *_SEQUENTIAL],
 }
 # Renderers lit by the scene's HDR environment (the others only see the scene's own lights).
@@ -68,7 +70,7 @@ _ENV_RENDERERS = {"pbr", "pbr_path", "newton_pbr", "mitsuba"}
 # Newton's MJCF import of these scenes takes minutes (mesh processing of >1M triangles): its two
 # renderers are measured in batch_64 only.
 SLOW_NEWTON_IMPORT = {"a_beautiful_game"}
-GALLERY_PANELS = ["mujoco", "mjwarp", "newton", "pbr", "pbr_path", "mitsuba"]
+GALLERY_PANELS = ["mujoco", "mjwarp", "newton", "newton_rtx", "pbr", "pbr_path", "mitsuba"]
 ENVMAP = "studio_small_09_1k.hdr"
 
 
@@ -114,11 +116,14 @@ def configurations(scene_names: list[str], contexts: dict, renderers: dict) -> l
   for scene in scene_names:
     for context, (nworld, res) in contexts.items():
       for renderer, args in renderers.items():
-        sequential = renderer in ("mujoco", "mitsuba")
+        sequential = renderer in ("mujoco", "mitsuba", "newton_rtx")
         if sequential and context == "batch_64":
           continue  # their per-image rate does not depend on nworld: 256² and 128² suffice
-        if renderer in ("newton", "newton_pbr") and scene in SLOW_NEWTON_IMPORT and context != "batch_64":
-          continue
+        if scene in SLOW_NEWTON_IMPORT:
+          if renderer in ("newton", "newton_pbr") and context != "batch_64":
+            continue
+          if renderer == "newton_rtx" and context != "single":
+            continue
         lit = envmap if renderer in _ENV_RENDERERS and scene not in scenes.LIGHTS_ONLY else []
         key = {"scene": scene, "context": context, "renderer": renderer, "nworld": nworld, "res": res}
         configs.append((key, ["--scene", scene, "--nworld", str(nworld), "--res", str(res), *args, *lit]))

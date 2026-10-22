@@ -28,6 +28,7 @@ RENDERER_NAMES = {
   "pbr_path": "PBR path (16 spp)",
   "newton_pbr": "PBR via Newton",
   "newton": "Newton",
+  "newton_rtx": "Newton RTX",
   "mjwarp": "MuJoCo Warp",
   "mujoco": "MuJoCo GL",
   "mitsuba": "Mitsuba (16 spp)",
@@ -37,7 +38,7 @@ CONTEXT_NAMES = {
   "batch_64": "Batch: 4096 worlds, 64²",
   "batch_128": "Batch: 1024 worlds, 128²",
 }
-SEQUENTIAL = {"mujoco", "mitsuba"}
+SEQUENTIAL = {"mujoco", "mitsuba", "newton_rtx"}
 
 
 def _fps(value: float) -> str:
@@ -133,7 +134,7 @@ def render(runs: list[Path], base: Path | None = None) -> str:
     gallery = run / "gallery"
     if gallery.exists():
       out += ["### Gallery", ""]
-      out += ["MuJoCo GL | MuJoCo Warp | Newton | PBR real-time | PBR path-traced | Mitsuba (reference).", ""]
+      out += ["MuJoCo GL | MuJoCo Warp | Newton | Newton RTX | PBR real-time | PBR path-traced | Mitsuba (reference).", ""]
       for still in sorted(gallery.glob("*.png")):
         rel = os.path.relpath(still, base)
         video = still.with_suffix(".mp4")
