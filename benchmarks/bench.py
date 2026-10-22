@@ -30,6 +30,7 @@ on the batch size, so they time a loop over min(nworld, --sequential-frames) ima
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -264,6 +265,13 @@ def main():
   step()
   wp.synchronize()
   jit = time.perf_counter() - jit_start
+  barrier = os.environ.get("MJPBR_BENCH_BARRIER")
+  if barrier:
+    # Multi-process runs (multigpu.py): start timing only once every process is warm.
+    directory, count = barrier.rsplit(":", 1)
+    Path(directory, str(os.getpid())).touch()
+    while len(os.listdir(directory)) < int(count):
+      time.sleep(0.05)
   sequential = args.renderer in ("mujoco", "mitsuba")
   if sequential:
     times = time_loop(step, args.iters, args.repeats)
