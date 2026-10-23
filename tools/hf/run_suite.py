@@ -54,14 +54,14 @@ def _sync(local: Path, remote: str, *extra: str):
   subprocess.run(["hf", "sync", str(local), remote, *extra], check=True)
 
 
-def sync_code(bucket: str):
-  """Uploads the repository at HEAD (tracked files only) plus its commit hash."""
+def sync_code(bucket: str, prefix: str = "code"):
+  """Uploads the repository at HEAD (tracked files) and its commit hash to <bucket>/<prefix>."""
   with tempfile.TemporaryDirectory() as tmp:
     archive = subprocess.run(["git", "-C", str(ROOT), "archive", "HEAD"], check=True, capture_output=True).stdout
     subprocess.run(["tar", "-x", "-C", tmp], input=archive, check=True)
     commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
     (Path(tmp) / "COMMIT").write_text(commit.stdout)
-    _sync(Path(tmp), f"hf://buckets/{bucket}/code", "--delete")
+    _sync(Path(tmp), f"hf://buckets/{bucket}/{prefix}", "--delete")
 
 
 def sync_assets(bucket: str, asset_dir: Path):

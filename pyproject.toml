@@ -91,3 +91,35 @@ testpaths = ["tests", "newton-pbr/tests"]
 
 [tool.setuptools.packages.find]
 include = ["mujoco_warp_pbr*"]
+
+# Type checking (ty, pyrefly). Benchmarks and tools import their sibling modules as scripts.
+# Warp kernels (@wp.kernel / @wp.func / @wp.struct) are a DSL that type checkers misread: array
+# indexing, vector arithmetic and struct annotations, so those rules are off. MuJoCo ships no stubs
+# for its extension modules.
+[tool.ty.environment]
+extra-paths = ["benchmarks", "tools", "newton-pbr"]
+
+[tool.ty.analysis]
+replace-imports-with-any = ["mujoco", "mujoco.**"]
+allowed-unresolved-imports = ["pxr.**", "newton.**", "newton", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "trimesh", "flip_evaluator"]
+
+[tool.ty.src]
+exclude = ["research/optix_poc", "context"]
+
+[tool.ty.rules]
+invalid-type-form = "ignore"
+not-subscriptable = "ignore"
+not-iterable = "ignore"
+unsupported-operator = "ignore"
+
+[tool.pyrefly]
+search-path = [".", "benchmarks", "tools", "newton-pbr"]
+project-excludes = ["research/optix_poc", "context", "**/.venv"]
+replace-imports-with-any = ["mujoco", "mujoco.*"]
+ignore-missing-imports = ["pxr.*", "newton", "newton.*", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "trimesh", "flip_evaluator"]
+
+[tool.pyrefly.errors]
+bad-index = "ignore"
+unsupported-operation = "ignore"
+not-iterable = "ignore"
+bad-unpacking = "ignore"

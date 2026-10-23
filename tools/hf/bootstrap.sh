@@ -1,11 +1,12 @@
 #!/bin/sh
 # Prepare a fresh Hugging Face Jobs / sandbox container (Ubuntu + NVIDIA driver) to run the tests
-# and benchmarks. Expects the project bucket mounted at /data (code in /data/code, converted
-# assets in /data/assets). Usage: sh /data/code/tools/hf/bootstrap.sh
+# and benchmarks. Expects the project bucket mounted at /data (code in $MJPBR_CODE, default
+# /data/code; converted assets in /data/assets). The copy ends up in /work/code.
+# Usage: sh /data/code/tools/hf/bootstrap.sh
 set -eu
 
 export DEBIAN_FRONTEND=noninteractive
-if ! command -v git >/dev/null 2>&1 || [ ! -e /usr/lib/x86_64-linux-gnu/libEGL.so.1 ]; then
+if ! command -v git >/dev/null 2>&1 || ! ldconfig -p | grep -q libEGL.so.1; then
   apt-get update -qq
   # git: mujoco-warp is a git dependency. EGL / GL: MuJoCo's native renderer. ffmpeg: videos.
   apt-get install -y -qq --no-install-recommends git ca-certificates curl libegl1 libgl1 libgles2 \
@@ -18,7 +19,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # Work on a local copy: the bucket mount is slow for many small files.
 mkdir -p /work
-cp -r /data/code /work/
+cp -r "${MJPBR_CODE:-/data/code}" /work/code
 cd /work/code
 uv sync -q --python 3.12 --all-packages --extra dev --extra bench
 # On GPUs with RT cores:
@@ -27,7 +28,7 @@ uv sync -q --python 3.12 --all-packages --extra dev --extra bench
 # - PyOptiX and the OptiX SDK headers for traversal="optix". Their version must match the
 #   driver's OptiX ABI (OPTIX_VERSION, default v9.0.0 for driver 580); the headers end up in
 #   /work/optix-dev/include (export OPTIX_INCLUDE_DIR to that).
-if nvidia-smi --query-gpu=name --format=csv,noheader | grep -qiE "rtx|l40|l4|a10|t4"; then
+if nvidia-smi --query-gpu=name --format=csv,noheader | grep -qiE "rtx|l40|\bl4\b|\ba10g?\b|\bt4\b"; then
   apt-get install -y -qq --no-install-recommends libopengl0 >/dev/null 2>&1 || true
   uv pip install -q --extra-index-url https://pypi.nvidia.com "ovrtx==0.5.1.*" "ovstage==0.2.1.*" usd-core pyglet || true
   OPTIX_VERSION="${OPTIX_VERSION:-v9.0.0}"
