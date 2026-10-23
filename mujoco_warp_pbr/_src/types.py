@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from __future__ import annotations
+
 import dataclasses
 import enum
 from typing import TYPE_CHECKING, Any
@@ -21,6 +23,8 @@ import warp as wp
 from mujoco_warp import RenderContext
 
 if TYPE_CHECKING:
+  from shape_extensions import IntVar
+
   from mujoco_warp_pbr._src.material import SurfaceFeatures
 
 
@@ -116,8 +120,8 @@ DEFAULT_BAKED = frozenset(
 
 
 @dataclasses.dataclass
-class PbrRenderContext:
-  """Context for physically based rendering.
+class PbrRenderContext[NWorld: IntVar]:
+  """Context for physically based rendering of NWorld worlds.
 
   Geometry (BVHs, cameras, rays) and the rgb / depth / segmentation output buffers live in
   `base`, a regular MuJoCo Warp render context, so `mujoco_warp.get_rgb` / `get_depth` /
@@ -227,35 +231,36 @@ class PbrRenderContext:
   tone_mapper: int
   use_shadows: bool
   shadow_light_fraction: float
-  geom_metallic: wp.array2d[float]
-  geom_roughness: wp.array2d[float]
-  geom_reflectance: wp.array2d[float]
-  mat_reflectance: wp.array2d[float]
-  light_intensity: wp.array2d[float]
-  light_range: wp.array2d[float]
-  light_bulbradius: wp.array2d[float]
+  # Batched (1 or nworld, n) per-world tables: the leading size is 1 until replaced per world.
+  geom_metallic: wp.array[float, [int, int]]
+  geom_roughness: wp.array[float, [int, int]]
+  geom_reflectance: wp.array[float, [int, int]]
+  mat_reflectance: wp.array[float, [int, int]]
+  light_intensity: wp.array[float, [int, int]]
+  light_range: wp.array[float, [int, int]]
+  light_bulbradius: wp.array[float, [int, int]]
   headlight_intensity: float
-  exposure: wp.array1d[float]
-  ambient_radiance: wp.array1d[wp.vec3]
+  exposure: wp.array[float, [int]]
+  ambient_radiance: wp.array[wp.vec3, [int]]
   dfg_lut: wp.Texture2D
   background_linear: wp.vec3
   has_env: bool
   env_background: bool
   env_maps: list
-  env_radiance: wp.array1d[wp.Texture2D]
-  env_prefiltered: wp.array1d[wp.Texture3D]
-  env_sh: wp.array2d[wp.vec3]
+  env_radiance: wp.array[wp.Texture2D, [int]]
+  env_prefiltered: wp.array[wp.Texture3D, [int]]
+  env_sh: wp.array[wp.vec3, [int, 9]]
   env_texel_angle: float
-  env_id: wp.array1d[int]
-  env_intensity: wp.array1d[float]
-  env_yaw: wp.array1d[float]
-  env_prob: wp.array3d[float]
-  env_marginal: wp.array2d[float]
-  env_conditional: wp.array3d[float]
-  textures: wp.array1d[wp.Texture2D]
+  env_id: wp.array[int, [int]]
+  env_intensity: wp.array[float, [int]]
+  env_yaw: wp.array[float, [int]]
+  env_prob: wp.array[float, [int, int, int]]
+  env_marginal: wp.array[float, [int, int]]
+  env_conditional: wp.array[float, [int, int, int]]
+  textures: wp.array[wp.Texture2D, [int]]
   textures_registry: list
-  tex_size: wp.array1d[wp.vec2]
-  features: "SurfaceFeatures"
+  tex_size: wp.array[wp.vec2, [int]]
+  features: SurfaceFeatures
   samples_per_pixel: int
   shadow_samples: int
   has_transparency: bool
@@ -271,14 +276,15 @@ class PbrRenderContext:
   rr_depth: int
   denoise: bool
   denoise_iterations: int
-  aov_albedo: wp.array2d[wp.vec3h]
-  aov_normal: wp.array2d[wp.vec3h]
-  aov_depth: wp.array2d[float]
-  aov_emission: wp.array2d[wp.vec3]
-  aov_variance: wp.array2d[float]
-  denoise_buffers: tuple[wp.array2d[wp.vec4], wp.array2d[wp.vec4]]
+  # Per-world image buffers (nworld, npixel); npixel is 1 for a buffer that is not used.
+  aov_albedo: wp.array[wp.vec3h, [NWorld, int]]
+  aov_normal: wp.array[wp.vec3h, [NWorld, int]]
+  aov_depth: wp.array[float, [NWorld, int]]
+  aov_emission: wp.array[wp.vec3, [NWorld, int]]
+  aov_variance: wp.array[float, [NWorld, int]]
+  denoise_buffers: tuple[wp.array[wp.vec4, [NWorld, int]], wp.array[wp.vec4, [NWorld, int]]]
   render_hdr: bool
-  hdr_data: wp.array2d[wp.vec3]
+  hdr_data: wp.array[wp.vec3, [NWorld, int]]
   traversal: str = "software"
   denoise_sigma_color: float = 4.0
   denoise_sigma_normal: float = 128.0
@@ -290,7 +296,7 @@ class PbrRenderContext:
   mesh_bvh_frame: wp.array1d[wp.mat33] | None = None
   trace_mesh_bvh_id: wp.array1d[wp.uint64] | None = None
   trace_mesh_registry: list[wp.Mesh] | None = None
-  geom_xmat_trace: wp.array2d[wp.mat33] | None = None
+  geom_xmat_trace: wp.array[wp.mat33, [NWorld, int]] | None = None
   baked: frozenset[str] = DEFAULT_BAKED
   _megakernel: wp.Kernel | None = None
   _megakernel_key: tuple | None = None

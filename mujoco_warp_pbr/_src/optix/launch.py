@@ -41,7 +41,7 @@ import dataclasses
 import os
 import re
 import warnings
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import warp as wp
@@ -68,6 +68,9 @@ from mujoco_warp_pbr._src.optix import trace as rt_trace
 from mujoco_warp_pbr._src.trace import Geometry
 from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import RenderOrder
+
+if TYPE_CHECKING:
+  from shape_extensions import IntVar
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -412,7 +415,7 @@ def _make_downsample(rc: PbrRenderContext, n: int) -> wp.Kernel:
   return downsample  # pyrefly: ignore[bad-return]  # @wp.kernel(...) is untyped: Pyrefly sees the function, Warp returns a Kernel
 
 
-def _supersampled_context(rc: PbrRenderContext, n: int) -> PbrRenderContext:
+def _supersampled_context[NWorld: IntVar](rc: PbrRenderContext[NWorld], n: int) -> PbrRenderContext[NWorld]:
   """Context rendering each of the n×n sub-pixel samples as a pixel of an n× larger image.
 
   Trace calls inside the megakernel's sample loop make OptiX keep (spill) much of the program
@@ -427,9 +430,9 @@ def _supersampled_context(rc: PbrRenderContext, n: int) -> PbrRenderContext:
     adr = getattr(base, name).numpy()
     setattr(hi, name, wp.array(np.where(adr >= 0, adr * n * n, adr), dtype=int))
 
-  def buffer(data: wp.array2d[Any], rendered: wp.array1d[bool], dtype: Any) -> wp.array2d[Any]:
+  def buffer[NW: IntVar](data: wp.array[Any, [NW, int]], rendered: wp.array1d[bool], dtype: Any) -> wp.array[Any, [NW, int]]:
     # Without any camera rendering it, the buffer is a placeholder (nworld, 1).
-    return wp.zeros((nworld, data.shape[1] * n * n if rendered.numpy().any() else 1), dtype=dtype)
+    return wp.zeros((data.shape[0], data.shape[1] * n * n if rendered.numpy().any() else 1), dtype=dtype)
 
   hi.rgb_data = buffer(base.rgb_data, base.render_rgb, wp.uint32)
   hi.depth_data = buffer(base.depth_data, base.render_depth, float)

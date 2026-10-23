@@ -51,6 +51,7 @@ from mujoco_warp_pbr._src.color import srgb_eotf
 if TYPE_CHECKING:
   from shape_extensions import Int
   from shape_extensions import IntVar
+  from warp.shape_checks import expect_shape
 
 # A linear radiance image, (height, width, 3) float32 (what load_hdr returns). Type-checking only.
 type HdrImage[H: IntVar, W: IntVar] = np.ndarray[[H, W, 3], np.dtype[np.float32]]
@@ -220,7 +221,9 @@ def _prefilter(
   stack_out[level, y, x, 3] = wp.float16(1.0)
 
 
-def _sh9_irradiance(image: np.ndarray[[int, int, 3], np.dtype[Any]]) -> np.ndarray[[9, 3], np.dtype[np.float32]]:
+def _sh9_irradiance[H: IntVar, W: IntVar](
+  image: np.ndarray[[H, W, 3], np.dtype[Any]],
+) -> np.ndarray[[9, 3], np.dtype[np.float32]]:
   """SH9 coefficients of Lambertian radiance (irradiance / π) for an equirect radiance image."""
   h, w, _ = image.shape
   theta = (np.arange(h) + 0.5) / h * np.pi
@@ -318,7 +321,7 @@ def _skybox_to_equirect(
     image_out[y, x, i] = srgb_eotf(c[i])
 
 
-def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> HdrImage[int, int] | None:
+def skybox_image[W: IntVar](mjm: mujoco.MjModel, width: Int[W] = 1024) -> HdrImage[W // 2, W] | None:
   """The model's skybox as a linear equirect image, or None if it has none."""
   ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else []
   if len(ids) == 0:
@@ -328,10 +331,10 @@ def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> HdrImage[int, int] |
   image = wp.zeros((width // 2, width, 3), dtype=float)
   wp.launch(_skybox_to_equirect, dim=(width // 2, width), inputs=[tex, 1.0 / float(mjm.tex_width[tex_id])], outputs=[image])
   # wp.array.numpy() has no declared return type in the stubs: restate its dtype and shape.
-  return cast("HdrImage[int, int]", image.numpy())
+  return cast("HdrImage[W // 2, W]", image.numpy())
 
 
-def _launch_prefilter(radiance: wp.Texture2D, width: int, height: int, stack: wp.array4d[wp.float16]) -> None:
+def _launch_prefilter(radiance: wp.Texture2D, width: int, height: int, stack: wp.array[wp.float16, [int, int, int, 4]]) -> None:
   """Runs `_prefilter` over the stack; on the CPU in row bands on several threads.
 
   Warp runs a CPU launch on one thread (and releases the GIL meanwhile): prefiltering a 1k map
@@ -382,6 +385,8 @@ class EnvironmentMap:
     )
     pw = min(PREFILTER_WIDTH, w)
     stack = wp.zeros((PREFILTER_LEVELS, pw // 2, pw, 4), dtype=wp.float16)
+    if TYPE_CHECKING:
+      expect_shape(stack, (PREFILTER_LEVELS, pw // 2, pw, 4))
     _launch_prefilter(self.radiance, w, h, stack)
     self.prefiltered = wp.Texture3D(
       stack,
@@ -394,19 +399,23 @@ class EnvironmentMap:
     self.width = w
 
 
-def sampling_distribution(
-  image: Image, width: int = CDF_WIDTH
-) -> tuple[
-  np.ndarray[[int, int], np.dtype[np.float32]],
-  np.ndarray[[int], np.dtype[np.float32]],
-  np.ndarray[[int, int], np.dtype[np.float32]],
-]:
+type SamplingTables[H: IntVar, W: IntVar] = tuple[
+  np.ndarray[[H, W], np.dtype[np.float32]],
+  np.ndarray[[H + 1], np.dtype[np.float32]],
+  np.ndarray[[H, W + 1], np.dtype[np.float32]],
+]
+
+
+def sampling_distribution(image: Image, width: int = CDF_WIDTH) -> SamplingTables[int, int]:
   """Piecewise-constant distribution over equirect cells ∝ luminance · sin θ.
 
   Returns (cell probabilities (h, w), marginal row CDF (h + 1,), conditional column CDFs
   (h, w + 1)); probabilities sum to 1.
   """
-  small = _downsample(np.asarray(image, dtype=np.float64)[..., :3], width)
+  return _sampling_tables(_downsample(np.asarray(image, dtype=np.float64)[..., :3], width))
+
+
+def _sampling_tables[H: IntVar, W: IntVar](small: np.ndarray[[H, W, 3], np.dtype[Any]]) -> SamplingTables[H, W]:
   h = small.shape[0]
   luminance = small @ np.array(LUMINANCE_WEIGHTS)
   sin_theta = np.sin((np.arange(h) + 0.5) / h * np.pi)[:, None]
@@ -482,7 +491,7 @@ def direction_pdf(prob: wp.array3d[float], env: int, yaw: float, direction: wp.v
 
 
 @dataclasses.dataclass
-class Environments:
+class Environments[NEnv: IntVar, H: IntVar, W: IntVar]:
   """Device resources of the environment maps of a context (see PbrRenderContext's env_*).
 
   Attributes:
@@ -497,16 +506,16 @@ class Environments:
   """
 
   maps: list
-  radiance: wp.array1d[wp.Texture2D]
-  prefiltered: wp.array1d[wp.Texture3D]
-  sh: wp.array2d[wp.vec3]
+  radiance: wp.array[wp.Texture2D, [NEnv]]
+  prefiltered: wp.array[wp.Texture3D, [NEnv]]
+  sh: wp.array[wp.vec3, [NEnv, 9]]
   width: float
-  prob: wp.array3d[float]
-  marginal: wp.array2d[float]
-  conditional: wp.array3d[float]
+  prob: wp.array[float, [NEnv, H, W]]
+  marginal: wp.array[float, [NEnv, H + 1]]
+  conditional: wp.array[float, [NEnv, H, W + 1]]
 
 
-def build_environments(images: list[Image]) -> Environments:
+def build_environments(images: list[Image]) -> Environments[int, int, int]:
   """GPU resources for a list of environment maps (sampling tables share one resolution)."""
   maps = [EnvironmentMap(im) for im in images]
   shape = None
@@ -529,7 +538,7 @@ def build_environments(images: list[Image]) -> Environments:
   )
 
 
-def empty_environments() -> Environments:
+def empty_environments() -> Environments[1, 1, 1]:
   """Placeholder resources of a context without environment map (constant ambient)."""
   radiance = wp.Texture2D(np.zeros((1, 1, 4), np.float16))
   prefiltered = wp.Texture3D(np.zeros((1, 1, 1, 4), np.float16))
@@ -553,9 +562,9 @@ def _downsampled_shape(shape: tuple[int, ...], max_width: int) -> tuple[int, int
   return h, w
 
 
-def _resize_nearest[C: IntVar, D: np.generic](
-  image: np.ndarray[[int, int, C], np.dtype[D]], shape: tuple[int, int]
-) -> np.ndarray[[int, int, C], np.dtype[D]]:
+def _resize_nearest[H: IntVar, W: IntVar, C: IntVar, D: np.generic](
+  image: np.ndarray[[int, int, C], np.dtype[D]], shape: tuple[Int[H], Int[W]]
+) -> np.ndarray[[H, W, C], np.dtype[D]]:
   h, w = shape
   ys = (np.arange(h) + 0.5) / h * image.shape[0]
   xs = (np.arange(w) + 0.5) / w * image.shape[1]

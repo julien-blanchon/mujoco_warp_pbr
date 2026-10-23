@@ -21,7 +21,7 @@ import math
 import os
 import warnings
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mujoco
 import mujoco_warp as mjw
@@ -43,6 +43,10 @@ from mujoco_warp_pbr._src.types import RenderOrder
 from mujoco_warp_pbr._src.types import Tier
 from mujoco_warp_pbr._src.types import ToneMapper
 from mujoco_warp_pbr._src.types import UnsetMaterial
+
+if TYPE_CHECKING:
+  from shape_extensions import Int
+  from shape_extensions import IntVar
 
 # Filament's default camera: f/16, 1/125 s, ISO 100.
 DEFAULT_EV100 = 14.96578428466209
@@ -120,8 +124,8 @@ def _select_traversal(
   return traversal
 
 
-def _bbox_area_sum(
-  points: np.ndarray[[int, 3], np.dtype[np.float64]], faces: np.ndarray[[int, 3], np.dtype[np.int32]]
+def _bbox_area_sum[NVert: IntVar, NFace: IntVar](
+  points: np.ndarray[[NVert, 3], np.dtype[np.float64]], faces: np.ndarray[[NFace, 3], np.dtype[np.int32]]
 ) -> float:
   """Summed surface area of the triangles' axis-aligned bounding boxes (a BVH cost proxy)."""
   tri = points[faces]
@@ -322,9 +326,9 @@ def _tuning_defaults(
   return block_dim, max_registers, ordered_traversal
 
 
-def create_render_context(
+def create_render_context[NWorld: IntVar](
   mjm: mujoco.MjModel,
-  nworld: int = 1,
+  nworld: Int[NWorld] = 1,
   cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
   render_rgb: list[bool] | bool | None = None,
   render_depth: list[bool] | bool | None = None,
@@ -367,7 +371,7 @@ def create_render_context(
   denoise_iterations: int = 3,
   render_hdr: bool = False,
   traversal: str = "software",
-) -> PbrRenderContext:
+) -> PbrRenderContext[NWorld]:
   """Creates a PBR render context on the current Warp device.
 
   Camera selection, resolutions, geom groups and the rgb / depth / segmentation switches
@@ -548,7 +552,7 @@ def create_render_context(
   npixel = base.rgb_data.shape[1]
   aov_pixels = npixel if denoise else 1
 
-  def per_world(values: np.ndarray[[int], np.dtype[Any]]) -> wp.array[float, [1, int]]:
+  def per_world[N: IntVar](values: np.ndarray[[N], np.dtype[Any]]) -> wp.array[float, [1, N]]:
     """A (1, n) batched float array: shared by every world until replaced."""
     return wp.array(np.asarray(values, dtype=np.float32).reshape(1, -1), dtype=float)
 

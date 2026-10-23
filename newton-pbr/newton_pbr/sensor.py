@@ -147,6 +147,17 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
   width: Int[W]
   height: Int[H]
   nworld: int
+  rc: mjpbr.PbrRenderContext[int]
+  # Newton shape index of geom g in world w (nworld, ngeom); MuJoCo geom frame in the shape frame.
+  _geom_shape: wp.array[wp.int32, [int, int]]
+  _offset_pos: wp.array[wp.vec3, [int]]
+  _offset_quat: wp.array[wp.quat, [int]]
+  # Placeholders bound to the outputs update() is not asked for.
+  _dummy_u: wp.array[wp.uint32, [1, 1, 1]]
+  _dummy_f: wp.array[float, [1, 1, 1]]
+  _dummy_v: wp.array[wp.vec3, [1, 1, 1]]
+  # Ray distance / forward depth per pixel.
+  _ray_scale: wp.array[float, [H, W]]
 
   def __init__(
     self,
@@ -216,7 +227,8 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
     ys = (1.0 - 2.0 * (np.arange(height) + 0.5) / height) * tan
     xs = (2.0 * (np.arange(width) + 0.5) / width - 1.0) * tan * width / height
     scale = np.sqrt(1.0 + xs[None, :] ** 2 + ys[:, None] ** 2)
-    self._ray_scale = wp.array(scale.astype(np.float32), dtype=float, device=device)
+    self._ray_scale = wp.empty((height, width), dtype=float, device=device)
+    self._ray_scale.assign(scale.astype(np.float32))
 
   def allocate_image_color(self) -> wp.array[wp.uint32, [int, H, W]]:
     """Packed RGBA colour image (Newton layout), shape (world_count, height, width)."""

@@ -456,15 +456,15 @@ class Scene:
 
   plane_ids: tuple[int, ...]
   grid: tuple[int, int, int]
-  frame: wp.array1d[wp.vec3]
+  frame: wp.array[wp.vec3, [4]]  # rt_trace.FRAME_SIZE: lower, upper, spacing, centre
   curve_geom: wp.array1d[int]
   prim_geom: wp.array1d[int]
   prim_visible: wp.array1d[wp.int32]
   handle: int
   # Only with instances:
   all_geom: wp.array1d[int]
-  bounds_init: wp.array1d[float]  # (lower xyz, upper xyz)
-  bounds: wp.array1d[float]
+  bounds_init: wp.array[float, [6]]  # (lower xyz, upper xyz)
+  bounds: wp.array[float, [6]]
   tri_geom: wp.array1d[int]
   mesh_gas: list[_Accel]
   mesh_handle: wp.array1d[wp.uint64]

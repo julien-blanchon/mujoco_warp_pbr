@@ -24,6 +24,7 @@ texture LOD of a ray cone (Akenine-Möller et al. 2019).
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
@@ -37,6 +38,9 @@ from mujoco_warp._src.render import _texture_sphere_ellipsoid
 from mujoco_warp._src.types import GeomType
 
 from mujoco_warp_pbr._src.color import srgb_to_linear
+
+if TYPE_CHECKING:
+  from shape_extensions import IntVar
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -56,9 +60,9 @@ def is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
   return bool(np.isin(tex_id, mjm.mat_texid[:, _COLOR_ROLES]))
 
 
-def upload_textures(
-  mjm: mujoco.MjModel, used: np.ndarray[[int], np.dtype[np.bool_]]
-) -> tuple[list[wp.Texture2D], np.ndarray[[int, 2], np.dtype[np.float32]]]:
+def upload_textures[NTex: IntVar](
+  mjm: mujoco.MjModel, used: np.ndarray[[NTex], np.dtype[np.bool_]]
+) -> tuple[list[wp.Texture2D], np.ndarray[[NTex, 2], np.dtype[np.float32]]]:
   """Creates mipmapped GPU textures for the 2D textures in `used`.
 
   sRGB textures become linear float16 (so filtering and mipmaps are linear); data textures stay
