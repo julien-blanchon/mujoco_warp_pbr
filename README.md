@@ -121,7 +121,8 @@ and all renderers in [`results/suite/suite-v2`](results/suite/suite-v2/README.md
   OptiX): RTX PRO 6000 418k, H200 167k, A100 115k frames/s.
 - Single-camera renderers for reference (frames/s, 256², DamagedHelmet): MuJoCo's OpenGL
   renderer 4.4k, Newton's `ViewerRTX` 91, Mitsuba 3 at 16 spp 218, this renderer's path-traced
-  tier at 16 spp 82 (5.0k real-time). Batched through one tiled render product (the "Newton RTX
+  tier at 16 spp 82 (5.0k real-time; measured before the path tier applied `max_registers`, which
+  made it about 2× faster). Batched through one tiled render product (the "Newton RTX
   (tiled)" column, static scenes only, `research/web/ovrtx_batching.md`), Omniverse RTX runs at
   about 70k frames/s whatever the scene.
 - Throughput saturates from about 1–4 M pixels per launch (e.g. 256 worlds at 64²).
@@ -135,11 +136,27 @@ See `results/scaling.md` and the milestone logs in [`results/history/`](results/
 (`m5_baseline.md`, `m7_autoresearch.md`) for more tables, `results/history/m6_pathtrace.md` for the
 path-traced tier and `results/rt_backend.md` for the OptiX backend.
 
-Tuning knobs: `max_registers` (96 by default, tuned on Hopper; 0 leaves it to the compiler),
-`render_order` (`RenderOrder.TILED` default; `RenderOrder.WORLD` is up to 2.7×
+Tuning knobs: `max_registers` (96 by default, tuned on Hopper; 0 leaves it to the compiler; both
+tiers apply it), `render_order` (`RenderOrder.TILED` default; `RenderOrder.WORLD` is up to 2.7×
 faster when all worlds render nearly the same image, e.g. fixed cameras), `block_dim`,
 `samples_per_pixel`, `shadow_samples`, and disabling unused features (`use_shadows`,
-`use_textures`, `specular_aa`, `enable_reflections`).
+`use_textures`, `specular_aa`, `enable_reflections`). The host side of a `render()` call takes
+about 61 µs (was 136 µs).
+
+Settings are compiled into the kernel only where reading them at runtime measured slower
+(DamagedHelmet and the material grid, 4096 worlds at 64², RTX PRO 6000):
+
+| compiled-in setting | why | measured runtime cost |
+| --- | --- | ---: |
+| `samples_per_pixel` | sample loop | 4–20% |
+| translucency (`max_layers`) | layer loop | 2–10% |
+| reflections, textures, environment map, light model, denoise | code paths | 2–6% |
+| light count, `render_order` | unrolled loop / pixel mapping | 1–4% |
+| tier, geom types, traversal, fast math, `max_registers` | structural | – |
+
+Changing one of these recompiles the kernel at the next render (about 2–7 s on GPU, 2 s on CPU);
+every other setting (tone mapper, shadows and shadow samples, headlight, clip planes, HDR output,
+environment background, specular AA, vertex normals, spot lights, …) is read at runtime.
 
 ## Running on CPU
 
@@ -166,8 +183,9 @@ python benchmarks/cpu_bench.py --parity --scene damaged_helmet --res 64   # CPU 
 
 DamagedHelmet at 64² renders at about 125–150 frames/s per core, scaling to 2.5k frames/s on a
 16-core / 32-thread EPYC and 34k on a GH200 node (4× 72-core Grace). One GH200 GPU is 6–47×
-faster than one 72-core Grace. A render context with an HDR environment takes about 35 s to
-create on the CPU, spent prefiltering the map. Full tables, the scaling curve and the baselines
+faster than one 72-core Grace. A render context with an HDR environment takes about 2 s to
+create on the CPU device (the map's prefilter runs in row bands on up to 16 threads; it took
+about 32–35 s on one core). Full tables, the scaling curve and the baselines
 are in [`results/cpu.md`](results/cpu.md).
 
 ## Benchmarks and validation

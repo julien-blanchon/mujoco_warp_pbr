@@ -204,6 +204,10 @@ first `render`.
 | real-time tier + envmap, warm cache (GH200 node) | 32.5–34 s | 0.1–0.3 s |
 | x86, cold cache | 35–38 s | 2.5–5 s |
 
+Update: the prefilter now runs in row bands on up to 16 threads (`envmap._launch_prefilter`), and
+creating a render context with the 1k environment on the CPU device takes about 2 s instead of
+~32 s. The table above predates that change.
+
 Warp compiles the CPU kernels in seconds. Almost all of the ~35 s goes to prefiltering the 1k
 HDR environment (`envmap.EnvironmentMap`): Warp kernels that run serially on one core, once per
 render context. `cpu_bench.py` shares the prefiltered maps between the render contexts of a
@@ -218,8 +222,8 @@ was left alone.
 ## Recommendations
 
 - **CI and tests on CPU-only runners: viable.** Images match the GPU to 1/255 for the
-  real-time tier. Expect about 35 s of startup per render context with an HDR environment;
-  tests that skip `envmap` start in a few seconds.
+  real-time tier. Expect about 2 s of startup per render context with an HDR environment (35 s
+  before the prefilter was parallelised); tests that skip `envmap` start in a few seconds.
 - **Small batches and laptops: usable.** One core renders 100–400 real-time frames/s at 64²
   (25–100 at 128²). An 8-core laptop gets about 1–3k frames/s with one thread per core. That is
   enough for debugging, visualisation and small RL runs. Path-traced frames take 0.07–0.25 s each
@@ -229,5 +233,5 @@ was left alone.
 - **Scaling recipe:** one worker per physical core, each with its own render context and
   `nworld` large enough for steps of at least about 50 ms. Use threads within one CPU socket and
   processes beyond it; with processes on a GPU machine, hide the GPUs.
-- **Startup:** precompute or cache the prefiltered environment, or parallelise the prefilter
-  kernels, to remove the ~35 s per context.
+- **Startup:** the prefilter kernels now run in parallel row bands (about 2 s per context);
+  caching the prefiltered environment would remove the rest.
