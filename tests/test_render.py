@@ -248,3 +248,53 @@ def test_render_orders_produce_identical_images(scene, order):
   other = scene(xml, render_order=order, **kwargs).render()
   np.testing.assert_array_equal(other.rc.base.rgb_data.numpy(), row.rc.base.rgb_data.numpy())
   np.testing.assert_array_equal(other.rc.base.seg_data.numpy(), row.rc.base.seg_data.numpy())
+
+
+def _l_shape_mesh() -> str:
+  """An axis-aligned L-shaped prism, inertia frame is rotated from the authored one."""
+
+  def box(lo, hi, base):
+    verts = [(x, y, z) for z in (lo[2], hi[2]) for y in (lo[1], hi[1]) for x in (lo[0], hi[0])]
+    faces = [(0, 2, 1), (1, 2, 3), (4, 5, 6), (5, 7, 6), (0, 1, 4), (1, 5, 4)]
+    faces += [(2, 6, 3), (3, 6, 7), (0, 4, 2), (2, 4, 6), (1, 3, 5), (3, 7, 5)]
+    return verts, [tuple(i + base for i in f) for f in faces]
+
+  v1, f1 = box((0, 0, 0), (2, 0.3, 0.2), 0)
+  v2, f2 = box((0, 0.3, 0), (0.3, 1.2, 0.2), 8)
+  vertex = " ".join(f"{c:g}" for v in v1 + v2 for c in v)
+  face = " ".join(str(i) for f in f1 + f2 for i in f)
+  return f'<mesh name="l" inertia="shell" scale="0.5 0.5 0.5" vertex="{vertex}" face="{face}"/>'
+
+
+@pytest.mark.parametrize("tier", [mjpbr.Tier.REALTIME, mjpbr.Tier.PATH])
+@pytest.mark.parametrize("ordered_traversal", [True, False])
+def test_reframed_mesh_bvh_renders_identically(scene, tier, ordered_traversal):
+  """A mesh BVH rebuilt in the authored frame (mesh_bvh_frame="auto") gives the same hits."""
+  xml = f"""
+    <mujoco>
+      <asset>{_l_shape_mesh()}</asset>
+      <worldbody>
+        <light pos="0.5 -0.5 3" dir="0 0 -1"/>
+        <geom type="plane" size="3 3 0.1"/>
+        <geom type="mesh" mesh="l" pos="-0.3 -0.2 0.1" euler="10 0 25"/>
+        <camera name="cam" pos="0 -2.2 1.6" xyaxes="1 0 0 0 0.6 0.8"/>
+      </worldbody>
+    </mujoco>
+  """
+  options = dict(
+    nworld=2,
+    cam_res=(48, 40),
+    render_depth=True,
+    render_seg=True,
+    tier=tier,
+    path_samples=2,
+    ordered_traversal=ordered_traversal,
+  )
+  ref = scene(xml, mesh_bvh_frame="mujoco", **options).render()
+  s = scene(xml, **options).render()
+  assert ref.rc.mesh_bvh_frame is None and s.rc.mesh_bvh_frame is not None
+
+  np.testing.assert_array_equal(s.rc.base.seg_data.numpy(), ref.rc.base.seg_data.numpy())
+  assert (s.rc.base.seg_data.numpy()[..., 0] == 1).sum() > 100  # the mesh fills part of the image
+  np.testing.assert_allclose(s.rc.base.depth_data.numpy(), ref.rc.base.depth_data.numpy(), rtol=1e-5, atol=1e-6)
+  np.testing.assert_allclose(s.rgb(), ref.rgb(), atol=2.0 / 255.0)

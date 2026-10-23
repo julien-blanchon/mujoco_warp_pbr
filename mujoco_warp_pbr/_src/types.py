@@ -176,6 +176,12 @@ class PbrRenderContext:
       (0: refit only)
     optix_max_registers: register cap of the OptiX programs (0: OptiX's default); 64 is the
       fastest measured on Blackwell RTX (up to 20% faster than the default)
+    mesh_bvh_frame: per-mesh rotation R of the software traversal's mesh BVHs, built over
+      `R v` (None when every mesh BVH is in MuJoCo's mesh frame)               (nmesh,)
+    trace_mesh_bvh_id: mesh BVHs of the software traversal (`base.mesh_bvh_id`, with the
+      re-framed copies where mesh_bvh_frame is not the identity)              (nmesh,)
+    trace_mesh_registry: the re-framed wp.Mesh objects (keeps them alive)
+    geom_xmat_trace: geom frames of ray queries, refreshed every render  (nworld, ngeom)
     _megakernel: cached specialised render kernel
     _optix: cached OptiX acceleration structures and pipeline (traversal="optix")
     _denoise_finish: cached remodulation / display kernel
@@ -247,6 +253,10 @@ class PbrRenderContext:
   traversal: str = "software"
   optix_rebuild_every: int = 0
   optix_max_registers: int = 64
+  mesh_bvh_frame: Any = None
+  trace_mesh_bvh_id: Any = None
+  trace_mesh_registry: Any = None
+  geom_xmat_trace: Any = None
   _megakernel: Any = None
   _optix: Any = None
   _denoise_finish: Any = None

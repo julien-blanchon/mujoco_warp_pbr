@@ -585,7 +585,7 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int):
     kernel=rc._megakernel,
     dim=kernel_inputs.launch_dim(rc, d.nworld),
     inputs=[
-      trace.geometry(m, d, rc.base),
+      trace.software_geometry(m, d, rc),
       material.materials(m, rc),
       lights.lights(m, d, rc),
       kernel_inputs.cameras(m, d, rc),

@@ -19,6 +19,14 @@
 any-hit funcs the megakernel calls. The default backend is MuJoCo Warp's scene BVH + per-geom
 intersection (`cast_ray`), specialised on the geom types present. The hardware ray-tracing
 backend (`optix/trace.py`) provides funcs with the same signatures.
+
+Mesh BVH frames: MuJoCo stores mesh vertices in the mesh's principal inertia frame, which for
+CAD-style assets is an arbitrary rotation of the authored, axis-aligned frame. Long axis-aligned
+triangles then get large, overlapping bounding boxes and the mesh BVH degrades (two orders of
+magnitude on some assets). The software traversal can therefore query a mesh through a copy
+built in a better-aligned frame `R` (vertices `R v`): ray queries read `geom_xmat_trace`, which
+holds `geom_xmat @ R^T` for those mesh geoms, so distances, faces, barycentrics and world normals
+are unchanged.
 """
 
 from typing import Tuple
@@ -28,6 +36,7 @@ from mujoco_warp import Data
 from mujoco_warp import Model
 from mujoco_warp import RenderContext
 from mujoco_warp._src.render import _make_cast_ray
+from mujoco_warp._src.types import GeomType
 
 from mujoco_warp_pbr._src import traverse
 
@@ -75,6 +84,8 @@ class Geometry:
   geom_xpos: wp.array2d[wp.vec3]
   geom_xmat: wp.array2d[wp.mat33]
   flexvert_xpos: wp.array2d[wp.vec3]
+  # Geom frames of ray queries: geom_xmat, times R^T for meshes whose BVH is built in frame R.
+  geom_xmat_trace: wp.array2d[wp.mat33]
   # Acceleration structures:
   bvh_id: wp.uint64
   group_root: wp.array[int]
@@ -107,6 +118,7 @@ def geometry(m: Model, d: Data, base: RenderContext) -> Geometry:
   geo.mat_rgba = m.mat_rgba
   geo.geom_xpos = d.geom_xpos
   geo.geom_xmat = d.geom_xmat
+  geo.geom_xmat_trace = d.geom_xmat
   geo.flexvert_xpos = d.flexvert_xpos
   geo.bvh_id = base.bvh_id
   geo.group_root = base.group_root
@@ -120,6 +132,43 @@ def geometry(m: Model, d: Data, base: RenderContext) -> Geometry:
   geo.flex_geom_edgeid = base.flex_geom_edgeid
   geo.flex_bvh_id = base.flex_bvh_id
   geo.flex_group_root = base.flex_group_root
+  return geo
+
+
+@wp.kernel
+def _mesh_trace_frames(
+  # Model:
+  geom_type: wp.array[int],
+  geom_dataid: wp.array2d[int],
+  # Data in:
+  geom_xmat_in: wp.array2d[wp.mat33],
+  # In:
+  mesh_bvh_frame: wp.array[wp.mat33],
+  # Out:
+  geom_xmat_trace_out: wp.array2d[wp.mat33],
+):
+  worldid, gi = wp.tid()
+  mat = geom_xmat_in[worldid, gi]
+  gtype = geom_type[gi]
+  if gtype == int(GeomType.MESH) or gtype == int(GeomType.SDF):
+    mesh_id = geom_dataid[worldid % geom_dataid.shape[0], gi]
+    if mesh_id >= 0:
+      mat = mat @ wp.transpose(mesh_bvh_frame[mesh_id])
+  geom_xmat_trace_out[worldid, gi] = mat
+
+
+def software_geometry(m: Model, d: Data, rc) -> Geometry:
+  """`geometry` for the software traversal: mesh queries use the re-framed mesh BVHs of `rc`."""
+  geo = geometry(m, d, rc.base)
+  if rc.mesh_bvh_frame is not None:
+    wp.launch(
+      _mesh_trace_frames,
+      dim=(d.nworld, m.ngeom),
+      inputs=[m.geom_type, m.geom_dataid, d.geom_xmat, rc.mesh_bvh_frame],
+      outputs=[rc.geom_xmat_trace],
+    )
+    geo.geom_xmat_trace = rc.geom_xmat_trace
+    geo.mesh_bvh_id = rc.trace_mesh_bvh_id
   return geo
 
 
@@ -150,7 +199,7 @@ def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: b
       geo.flex_radius,
       geo.mat_rgba,
       geo.geom_xpos,
-      geo.geom_xmat,
+      geo.geom_xmat_trace,
       geo.flexvert_xpos,
       geo.bvh_id,
       geo.group_root[worldid],
@@ -193,7 +242,7 @@ def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: b
       geo.flex_radius,
       geo.mat_rgba,
       geo.geom_xpos,
-      geo.geom_xmat,
+      geo.geom_xmat_trace,
       geo.flexvert_xpos,
       geo.bvh_id,
       geo.group_root[worldid],
