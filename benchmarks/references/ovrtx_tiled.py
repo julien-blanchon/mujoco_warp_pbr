@@ -74,18 +74,18 @@ def _tiled_viewer_class():
     """ViewerRTX whose stage holds `nworld` partitioned copies of the world and one camera each."""
 
     def configure(self, nworld, res, cam_pos, cam_xmat, fovy, mode, minimal_mode, shadows, layout, shift):
-      self._tile = dict(
-        nworld=nworld,
-        res=res,
-        cam_pos=cam_pos,
-        cam_xmat=cam_xmat,
-        fovy=fovy,
-        mode=mode,
-        minimal_mode=minimal_mode,
-        shadows=shadows,
-        layout=layout,
-        shift=shift,
-      )
+      self._tile = {
+        "nworld": nworld,
+        "res": res,
+        "cam_pos": cam_pos,
+        "cam_xmat": cam_xmat,
+        "fovy": fovy,
+        "mode": mode,
+        "minimal_mode": minimal_mode,
+        "shadows": shadows,
+        "layout": layout,
+        "shift": shift,
+      }
 
     def _add_camera_lights_and_render_product(self):
       super()._add_camera_lights_and_render_product()

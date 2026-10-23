@@ -243,7 +243,7 @@ def test_render_orders_produce_identical_images(scene, order):
     </mujoco>
   """
   # Sizes that are not multiples of the 8-row tile band exercise the last, shorter band.
-  kwargs = dict(nworld=2, cam_res=[(37, 21), (16, 11)], render_depth=True, render_seg=True)
+  kwargs = {"nworld": 2, "cam_res": [(37, 21), (16, 11)], "render_depth": True, "render_seg": True}
   row = scene(xml, **kwargs).render()
   other = scene(xml, render_order=order, **kwargs).render()
   np.testing.assert_array_equal(other.rc.base.rgb_data.numpy(), row.rc.base.rgb_data.numpy())
@@ -281,15 +281,15 @@ def test_reframed_mesh_bvh_renders_identically(scene, tier, ordered_traversal):
       </worldbody>
     </mujoco>
   """
-  options = dict(
-    nworld=2,
-    cam_res=(48, 40),
-    render_depth=True,
-    render_seg=True,
-    tier=tier,
-    path_samples=2,
-    ordered_traversal=ordered_traversal,
-  )
+  options = {
+    "nworld": 2,
+    "cam_res": (48, 40),
+    "render_depth": True,
+    "render_seg": True,
+    "tier": tier,
+    "path_samples": 2,
+    "ordered_traversal": ordered_traversal,
+  }
   ref = scene(xml, mesh_bvh_frame="mujoco", **options).render()
   s = scene(xml, **options).render()
   assert ref.rc.mesh_bvh_frame is None and s.rc.mesh_bvh_frame is not None
