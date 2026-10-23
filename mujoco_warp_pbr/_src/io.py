@@ -37,6 +37,8 @@ from mujoco_warp_pbr._src import material
 from mujoco_warp_pbr._src import pathtrace
 from mujoco_warp_pbr._src import texture
 from mujoco_warp_pbr._src import traverse
+from mujoco_warp_pbr._src.rays import CameraRays
+from mujoco_warp_pbr._src.rays import set_camera_rays
 from mujoco_warp_pbr._src.types import LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import RenderOrder
@@ -371,6 +373,8 @@ def create_render_context[NWorld: IntVar](
   denoise_iterations: int = 3,
   render_hdr: bool = False,
   traversal: str = "software",
+  render_guides: bool = False,
+  camera_rays: CameraRays | None = None,
 ) -> PbrRenderContext[NWorld]:
   """Creates a PBR render context on the current Warp device.
 
@@ -452,6 +456,11 @@ def create_render_context[NWorld: IntVar](
       "auto" picks "optix" when it is available and meshes are rendered (3-7x faster than
       software on the mesh scenes measured on RTX PRO 6000), else "software": on
       primitive-only scenes OptiX ranged from 0.6x (mirror reflections) to 1.3x of software.
+    render_guides: Also write the first-hit guides of RGB cameras: linear base colour
+      (`guide_albedo`, read with `get_albedo`) and world-space shading normal (`guide_normal`,
+      `get_normal`) of the surface the pixel's first sample hits.
+    camera_rays: Optional per-pixel camera rays replacing the cameras' pinhole projection (e.g.
+      distorted or fisheye lenses), see `set_camera_rays`.
 
   Returns:
     The PBR render context.
@@ -556,7 +565,7 @@ def create_render_context[NWorld: IntVar](
     """A (1, n) batched float array: shared by every world until replaced."""
     return wp.array(np.asarray(values, dtype=np.float32).reshape(1, -1), dtype=float)
 
-  return PbrRenderContext(
+  rc = PbrRenderContext(
     base=base,
     light_model=int(light_model),
     tone_mapper=int(tone_mapper),
@@ -615,5 +624,11 @@ def create_render_context[NWorld: IntVar](
     render_hdr=render_hdr,
     hdr_data=wp.zeros((nworld, npixel if render_hdr or denoise else 1), dtype=wp.vec3),
     traversal=traversal,
+    render_guides=render_guides,
+    guide_albedo=wp.zeros((nworld, npixel if render_guides else 1), dtype=wp.vec3),
+    guide_normal=wp.zeros((nworld, npixel if render_guides else 1), dtype=wp.vec3),
     **frames,
   )
+  if camera_rays is not None:
+    set_camera_rays(rc, camera_rays)
+  return rc

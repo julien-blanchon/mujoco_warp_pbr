@@ -86,9 +86,11 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
   values = kernel_inputs.settings_values(rc)
   resolve = kernel_inputs.make_resolve_settings(rc, values)
   eval_surface = material.make_eval_surface(rc.base.geom_ray_types)
-  geometry_only = camera.make_geometry_only(trace_closest)
+  primary_ray, pixel_cone = camera.make_camera_rays(rc.ray_direction is not None)
+  geometry_only = camera.make_geometry_only(trace_closest, primary_ray)
   nlight = m.nlight
   unroll_lights = "nlight" in rc.baked
+  guides = bool(rc.render_guides)
 
   @wp.func
   def light_visibility(
@@ -287,16 +289,19 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
     headlight_dir: wp.vec3,
     seed: int,
     stream: int,
-  ) -> tuple[wp.vec3, trace.Hit]:
-    """Radiance along a camera ray and its first hit.
+  ) -> tuple[wp.vec3, trace.Hit, wp.vec3, wp.vec3]:
+    """Radiance along a camera ray, its first hit and that surface's base colour and normal.
 
-    Random streams: `stream` shades the camera ray's surfaces, `stream + 1` the mirror bounce.
+    The base colour and normal are only evaluated with render_guides (else zero). Random
+    streams: `stream` shades the camera ray's surfaces, `stream + 1` the mirror bounce.
     """
     radiance = wp.vec3(0.0)
     throughput = float(1.0)
     travelled = float(0.0)
     first = trace.Hit()
     first.geom_id = -1
+    first_albedo = wp.vec3(0.0)
+    first_normal = wp.vec3(0.0)
     nlayer = wp.where(s.has_transparency, s.max_layers, 1)
     for layer in range(nlayer):
       hit = trace_closest(geo, worldid, origin, direction, max_dist - travelled)
@@ -308,6 +313,10 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
       point = origin + direction * hit.dist
       cone = footprint + spread * (travelled + hit.dist)
       surface, normal = eval_surface(geo, mats, s, worldid, hit, point, direction, cone)
+      if wp.static(guides):
+        if layer == 0:
+          first_albedo = surface.base_color
+          first_normal = normal
       shaded = shade_surface(geo, lit, env, s, worldid, surface, point, normal, -direction, headlight_dir, seed, stream)
 
       if s.has_reflection:
@@ -329,7 +338,7 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
       else:
         radiance += shaded
         break
-    return radiance, first
+    return radiance, first, first_albedo, first_normal
 
   @wp.func
   def render_pixel(
@@ -348,17 +357,16 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
     if pix.camid == -1:
       return
     if not pix.want_rgb:
-      geometry_only(geo, out, pix, s, worldid, 1, 0)
+      geometry_only(geo, cams, out, pix, s, worldid, 1, 0)
       return
 
     n_aa = s.samples_per_axis
     inv_aa = 1.0 / float(n_aa)
     # Ray-cone parameters from the neighbouring pixel: angular spread (perspective) and width
     # (orthographic), shared by the sub-pixel samples.
-    d0, o0 = camera.camera_frame_ray(pix, 1, 0, 0, s.znear)
-    d1, o1 = camera.camera_frame_ray(pix, 1, 1, 0, s.znear)
-    spread = wp.length(d1 - d0) * inv_aa
-    width = wp.length(o1 - o0) * inv_aa
+    pixel_spread, pixel_width = pixel_cone(cams, pix, s)
+    spread = pixel_spread * inv_aa
+    width = pixel_width * inv_aa
     headlight_dir = camera.headlight_dir(pix)
 
     pixel_seed = seed + worldid * s.total_rays + rayid
@@ -366,15 +374,16 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
     display = wp.vec3(0.0)
     hdr = wp.vec3(0.0)
     for smp in range(n_aa * n_aa):
-      origin, direction, ray_dir_cam = camera.camera_ray(pix, n_aa, smp % n_aa, smp // n_aa, s.znear)
-      max_dist = camera.max_ray_dist(ray_dir_cam, s.zfar)
-      radiance, hit = trace_pixel(
+      origin, direction, max_dist, depth_axis = primary_ray(cams, pix, n_aa, smp % n_aa, smp // n_aa, s)
+      radiance, hit, albedo, normal = trace_pixel(
         geo, mats, lit, env, s, worldid, origin, direction, max_dist, width, spread, headlight_dir, pixel_seed, 2 * smp
       )
 
-      # Depth and segmentation come from the first sample, as in MuJoCo Warp.
+      # Depth, segmentation and guides come from the first sample, as in MuJoCo Warp.
       if smp == 0:
-        write_geometry(out, worldid, pix.camid, pix.pixelid, hit, ray_dir_cam, pix.want_depth, pix.want_seg)
+        write_geometry(out, worldid, pix.camid, pix.pixelid, hit, depth_axis, pix.want_depth, pix.want_seg)
+        if wp.static(guides):
+          kernel_inputs.write_guides(out, worldid, out.rgb_adr[pix.camid] + pix.pixelid, albedo, normal)
 
       display += color.display_transform(radiance * exposure, s.tone_mapper)
       hdr += radiance

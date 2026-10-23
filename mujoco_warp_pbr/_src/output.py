@@ -53,21 +53,21 @@ def get_segmentation[NWorld: IntVar, NOut: IntVar, H: IntVar, W: IntVar](
 
 
 @wp.kernel
-def _extract_hdr(
+def _extract_rgb_image(
   # In:
-  hdr_data: wp.array2d[wp.vec3],
+  data: wp.array2d[wp.vec3],
   rgb_adr: wp.array1d[int],
   camera_index: int,
   # Out:
-  hdr_out: wp.array3d[wp.vec3],
+  out: wp.array3d[wp.vec3],
 ):
   worldid, pixelid = wp.tid()
-  xid = pixelid % hdr_out.shape[2]
-  yid = pixelid // hdr_out.shape[2]
-  hdr_out[worldid, yid, xid] = hdr_data[worldid, rgb_adr[camera_index] + pixelid]
+  xid = pixelid % out.shape[2]
+  yid = pixelid // out.shape[2]
+  out[worldid, yid, xid] = data[worldid, rgb_adr[camera_index] + pixelid]
 
 
-def _camera_res(rc: PbrRenderContext) -> np.ndarray[[int, 2], np.dtype[np.int32]]:
+def camera_res(rc: PbrRenderContext) -> np.ndarray[[int, 2], np.dtype[np.int32]]:
   """(nrender, 2) camera resolutions on host (cached per `base.cam_res` array)."""
   cam_res = rc.base.cam_res
   cached = rc._host_cache.get("cam_res")
@@ -75,6 +75,29 @@ def _camera_res(rc: PbrRenderContext) -> np.ndarray[[int, 2], np.dtype[np.int32]
     cached = (cam_res, cam_res.numpy())
     rc._host_cache["cam_res"] = cached
   return cached[1]
+
+
+def _get_rgb_image[NWorld: IntVar, NOut: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext[NWorld],
+  data: wp.array[wp.vec3, [NWorld, int]],
+  camera_index: int,
+  out: wp.array[wp.vec3, [NOut, H, W]],
+  name: str,
+) -> None:
+  """Copies one camera's image of a per-RGB-pixel buffer (hdr_data, guides) into out."""
+  res = camera_res(rc)
+  if not 0 <= camera_index < len(res):
+    raise ValueError(f"camera_index must be in [0, {len(res)}), got {camera_index}")
+  nworld = data.shape[0]
+  width, height = (int(v) for v in res[camera_index])
+  if out.ndim != 3 or out.shape[0] > nworld or tuple(out.shape[1:]) != (height, width):
+    raise ValueError(f"{name} must have shape (<= {nworld}, {height}, {width}), got {tuple(out.shape)}")
+  wp.launch(
+    _extract_rgb_image,
+    dim=(out.shape[0], height * width),
+    inputs=[data, rc.base.rgb_adr, camera_index],
+    outputs=[out],
+  )
 
 
 def get_hdr[NWorld: IntVar, NOut: IntVar, H: IntVar, W: IntVar](
@@ -90,16 +113,40 @@ def get_hdr[NWorld: IntVar, NOut: IntVar, H: IntVar, W: IntVar](
   """
   if not rc.render_hdr:
     raise ValueError("create the render context with render_hdr=True to read HDR output")
-  res = _camera_res(rc)
-  if not 0 <= camera_index < len(res):
-    raise ValueError(f"camera_index must be in [0, {len(res)}), got {camera_index}")
-  nworld = rc.hdr_data.shape[0]
-  width, height = (int(v) for v in res[camera_index])
-  if hdr_out.ndim != 3 or hdr_out.shape[0] > nworld or tuple(hdr_out.shape[1:]) != (height, width):
-    raise ValueError(f"hdr_out must have shape (<= {nworld}, {height}, {width}), got {tuple(hdr_out.shape)}")
-  wp.launch(
-    _extract_hdr,
-    dim=(hdr_out.shape[0], height * width),
-    inputs=[rc.hdr_data, rc.base.rgb_adr, camera_index],
-    outputs=[hdr_out],
-  )
+  _get_rgb_image(rc, rc.hdr_data, camera_index, hdr_out, "hdr_out")
+
+
+def _guides[NWorld: IntVar](
+  rc: PbrRenderContext[NWorld],
+) -> tuple[wp.array[wp.vec3, [NWorld, int]], wp.array[wp.vec3, [NWorld, int]]]:
+  if not rc.render_guides:
+    raise ValueError("create the render context with render_guides=True to read the albedo / normal guides")
+  return rc.guide_albedo, rc.guide_normal
+
+
+def get_albedo[NWorld: IntVar, NOut: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext[NWorld], camera_index: int, albedo_out: wp.array[wp.vec3, [NOut, H, W]]
+) -> None:
+  """Writes the linear base colour of each pixel's first hit (zero: background) for one camera.
+
+  Needs render_guides=True (RGB cameras).
+
+  Raises:
+    ValueError: without render_guides, for a camera index out of range or an output whose shape
+      does not match the camera image.
+  """
+  _get_rgb_image(rc, _guides(rc)[0], camera_index, albedo_out, "albedo_out")
+
+
+def get_normal[NWorld: IntVar, NOut: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext[NWorld], camera_index: int, normal_out: wp.array[wp.vec3, [NOut, H, W]]
+) -> None:
+  """Writes the world-space shading normal of each pixel's first hit (zero: background).
+
+  Needs render_guides=True (RGB cameras).
+
+  Raises:
+    ValueError: without render_guides, for a camera index out of range or an output whose shape
+      does not match the camera image.
+  """
+  _get_rgb_image(rc, _guides(rc)[1], camera_index, normal_out, "normal_out")

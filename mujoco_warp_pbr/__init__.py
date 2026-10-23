@@ -17,10 +17,14 @@
 
 from mujoco_warp_pbr._src.envmap import load_hdr as load_hdr
 from mujoco_warp_pbr._src.io import create_render_context as create_render_context
+from mujoco_warp_pbr._src.output import get_albedo as get_albedo
 from mujoco_warp_pbr._src.output import get_depth as get_depth
 from mujoco_warp_pbr._src.output import get_hdr as get_hdr
+from mujoco_warp_pbr._src.output import get_normal as get_normal
 from mujoco_warp_pbr._src.output import get_rgb as get_rgb
 from mujoco_warp_pbr._src.output import get_segmentation as get_segmentation
+from mujoco_warp_pbr._src.rays import CameraRays as CameraRays
+from mujoco_warp_pbr._src.rays import set_camera_rays as set_camera_rays
 from mujoco_warp_pbr._src.render import render as render
 from mujoco_warp_pbr._src.types import LightModel as LightModel
 from mujoco_warp_pbr._src.types import PbrRenderContext as PbrRenderContext
@@ -30,6 +34,7 @@ from mujoco_warp_pbr._src.types import ToneMapper as ToneMapper
 from mujoco_warp_pbr._src.types import UnsetMaterial as UnsetMaterial
 
 __all__ = [
+  "CameraRays",
   "LightModel",
   "PbrRenderContext",
   "RenderOrder",
@@ -37,10 +42,13 @@ __all__ = [
   "ToneMapper",
   "UnsetMaterial",
   "create_render_context",
+  "get_albedo",
   "get_depth",
   "get_hdr",
+  "get_normal",
   "get_rgb",
   "get_segmentation",
   "load_hdr",
   "render",
+  "set_camera_rays",
 ]

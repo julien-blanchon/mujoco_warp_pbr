@@ -104,6 +104,8 @@ class Primary:
   normal: wp.vec3
   # Emitted radiance, kept out of the filtered (noisy) part of the image.
   emission: wp.vec3
+  # Base colour of the camera ray's surface (render_guides).
+  base_color: wp.vec3
 
 
 @wp.func
@@ -118,7 +120,9 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
   geom_types = base.geom_ray_types
   trace_closest, trace_any = trace.make_trace(geom_types, base.enable_backface_culling, rc.ordered_traversal)
   eval_surface = material.make_eval_surface(geom_types)
-  geometry_only = camera.make_geometry_only(trace_closest)
+  primary_ray, _pixel_cone = camera.make_camera_rays(rc.ray_direction is not None)
+  geometry_only = camera.make_geometry_only(trace_closest, primary_ray)
+  guides = bool(rc.render_guides)
   resolve = kernel_inputs.make_resolve_settings(rc, kernel_inputs.settings_values(rc))
 
   @wp.func
@@ -220,6 +224,8 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     first.albedo = wp.vec3(1.0)
     first.normal = wp.vec3(0.0)
     first.emission = wp.vec3(0.0)
+    if wp.static(guides):
+      first.base_color = wp.vec3(0.0)
     camera_ray = bool(True)
     delta_bounce = bool(True)
     pdf_prev = float(0.0)
@@ -270,6 +276,8 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       if camera_ray:
         first.albedo = surface.base_color
         first.normal = normal
+        if wp.static(guides):
+          first.base_color = surface.base_color
         first.emission = surface.emissive / exposure
       camera_ray = False
 
@@ -357,7 +365,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       return
     centre = wp.static(_SUBPIXEL // 2)
     if not pix.want_rgb:
-      geometry_only(geo, out, pix, s, worldid, wp.static(_SUBPIXEL), centre)
+      geometry_only(geo, cams, out, pix, s, worldid, wp.static(_SUBPIXEL), centre)
       return
 
     headlight_dir = camera.headlight_dir(pix)
@@ -376,15 +384,16 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       if smp > 0:
         sx = int(_rand(pixel_seed, smp, wp.static(_JITTER_DEPTH), 0) * wp.static(float(_SUBPIXEL)))
         sy = int(_rand(pixel_seed, smp, wp.static(_JITTER_DEPTH), 1) * wp.static(float(_SUBPIXEL)))
-      origin, direction, ray_dir_cam = camera.camera_ray(pix, wp.static(_SUBPIXEL), sx, sy, s.znear)
-      max_dist = camera.max_ray_dist(ray_dir_cam, s.zfar)
+      origin, direction, max_dist, depth_axis = primary_ray(cams, pix, wp.static(_SUBPIXEL), sx, sy, s)
       radiance, first = trace_path(
         geo, mats, lit, env, s, worldid, origin, direction, max_dist, headlight_dir, max_depth, rr_depth, pixel_seed, smp
       )
       if smp == 0:
-        write_geometry(out, worldid, pix.camid, pix.pixelid, first.hit, ray_dir_cam, pix.want_depth, pix.want_seg)
+        write_geometry(out, worldid, pix.camid, pix.pixelid, first.hit, depth_axis, pix.want_depth, pix.want_seg)
+        if wp.static(guides):
+          kernel_inputs.write_guides(out, worldid, out.rgb_adr[pix.camid] + pix.pixelid, first.base_color, first.normal)
         if first.hit.geom_id != -1:
-          first_depth = first.hit.dist * -ray_dir_cam[2]
+          first_depth = first.hit.dist * -depth_axis[2]
       hdr += radiance
       albedo_sum += first.albedo
       normal_sum += first.normal

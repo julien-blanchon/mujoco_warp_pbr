@@ -128,6 +128,49 @@ def test_rgb_close_to_software(samples_per_pixel):
   assert np.mean(np.all(out["software"][2] == out["optix"][2], axis=-1)) > 0.998
 
 
+@pytest.mark.parametrize("samples_per_pixel", [1, 2])
+def test_camera_rays_and_guides_match_software(samples_per_pixel):
+  # A fisheye-like bundle: equidistant projection over 140 degrees (no pinhole equivalent).
+  w, h = 48, 40
+  u = (np.arange(w) + 0.5) / w * 2.0 - 1.0
+  v = 1.0 - (np.arange(h) + 0.5) / h * 2.0
+  x, y = np.meshgrid(u, v * h / w)
+  theta = np.hypot(x, y) * np.radians(70.0)
+  phi = np.arctan2(y, x)
+  direction = np.stack([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), -np.cos(theta)], axis=-1)
+  rays = np.stack([np.zeros_like(direction), direction], axis=2)[None].astype(np.float32)
+  out = {}
+  for traversal in ("software", "optix"):
+    mjm = mujoco.MjModel.from_xml_string(_XML)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=2)
+    rc = mjpbr.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(w, h),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+      traversal=traversal,
+      samples_per_pixel=samples_per_pixel,
+      render_guides=True,
+      camera_rays=rays,
+    )
+    mjw.refit_bvh(m, d, rc.base)
+    mjpbr.render(m, d, rc)
+    out[traversal] = [a.numpy() for a in (rc.base.rgb_data, rc.base.depth_data, rc.base.seg_data, rc.guide_normal)]
+  (rgb_s, depth_s, seg_s, normal_s), (rgb_o, depth_o, seg_o, normal_o) = out["software"], out["optix"]
+  same = np.all(seg_s == seg_o, axis=-1)
+  assert np.mean(same) > 0.998
+  np.testing.assert_allclose(depth_o[same], depth_s[same], rtol=2e-4, atol=1e-5)
+  np.testing.assert_allclose(normal_o[same], normal_s[same], atol=2e-3)
+  diff = np.abs(_rgb8(rgb_s) - _rgb8(rgb_o)).max(axis=-1)
+  assert _rgb8(rgb_s).mean() > 20.0
+  assert np.mean(diff > 2) < 0.005
+
+
 def test_transparent_geoms_are_skipped():
   xml = _XML.replace(
     '<geom type="sphere" pos="0 0 0.4" size="0.3"/>', '<geom type="sphere" pos="0 0 0.4" size="0.3" rgba="1 0 0 0"/>'

@@ -198,6 +198,17 @@ class PbrRenderContext[NWorld: IntVar]:
     denoise_buffers: ping-pong filter buffers                          (nworld, npixel)
     render_hdr: whether linear HDR (pre-exposure, pre-tone-mapping) is written
     hdr_data: linear HDR radiance                                      (nworld, npixel)
+    render_guides: whether the first-hit guides guide_albedo / guide_normal are written (RGB
+      cameras; compiled in; set at creation, which sizes the buffers)
+    guide_albedo: linear base colour of the first surface hit by the first sample, zero for
+      the background (render_guides)                                   (nworld, npixel)
+    guide_normal: world-space shading normal of that surface, zero for the background
+      (render_guides)                                                  (nworld, npixel)
+    ray_origin: camera-frame ray origin per pixel of the ray bundle; None renders pinhole rays
+      from the cameras' fovy / intrinsics (see `set_camera_rays`)      (total_rays,)
+    ray_direction: camera-frame ray direction per pixel of the bundle, zero: no ray  (total_rays,)
+    ray_adr: first bundle ray of each rendering camera                 (nrender,)
+    ray_res: bundle resolution (width, height) of each rendering camera (nrender,)
     traversal: ray traversal of the real-time tier: "software" (MuJoCo Warp's BVH in Warp) or
       "optix" (hardware ray tracing through OptiX, see optix/)
     optix_rebuild_every: rebuild the OptiX IAS every this many frames instead of refitting it
@@ -285,6 +296,9 @@ class PbrRenderContext[NWorld: IntVar]:
   denoise_buffers: tuple[wp.array[wp.vec4, [NWorld, int]], wp.array[wp.vec4, [NWorld, int]]]
   render_hdr: bool
   hdr_data: wp.array[wp.vec3, [NWorld, int]]
+  render_guides: bool
+  guide_albedo: wp.array[wp.vec3, [NWorld, int]]
+  guide_normal: wp.array[wp.vec3, [NWorld, int]]
   traversal: str = "software"
   denoise_sigma_color: float = 4.0
   denoise_sigma_normal: float = 128.0
@@ -297,6 +311,10 @@ class PbrRenderContext[NWorld: IntVar]:
   trace_mesh_bvh_id: wp.array1d[wp.uint64] | None = None
   trace_mesh_registry: list[wp.Mesh] | None = None
   geom_xmat_trace: wp.array[wp.mat33, [NWorld, int]] | None = None
+  ray_origin: wp.array1d[wp.vec3] | None = None
+  ray_direction: wp.array1d[wp.vec3] | None = None
+  ray_adr: wp.array1d[int] | None = None
+  ray_res: wp.array1d[wp.vec2i] | None = None
   baked: frozenset[str] = DEFAULT_BAKED
   _megakernel: wp.Kernel | None = None
   _megakernel_key: tuple | None = None

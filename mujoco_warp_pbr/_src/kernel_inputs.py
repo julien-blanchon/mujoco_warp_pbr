@@ -162,6 +162,11 @@ class Cameras:
   nrender: int
   cam_res: wp.array1d[wp.vec2i]
   cam_id_map: wp.array1d[int]
+  # Ray bundle (None for pinhole cameras, see camera.make_camera_rays):
+  ray_origin: wp.array1d[wp.vec3]
+  ray_direction: wp.array1d[wp.vec3]
+  ray_adr: wp.array1d[int]
+  ray_res: wp.array1d[wp.vec2i]
 
 
 @wp.struct
@@ -194,6 +199,9 @@ class Outputs:
   depth: wp.array2d[float]
   seg: wp.array2d[wp.vec2i]
   hdr: wp.array2d[wp.vec3]
+  # First-hit guides (render_guides), at rgb_adr:
+  albedo: wp.array2d[wp.vec3]
+  normal: wp.array2d[wp.vec3]
 
 
 @wp.func
@@ -221,6 +229,13 @@ def write_geometry(
       # Planar depth: distance projected onto the optical axis (-z in camera frame).
       depth = hit.dist * -ray_dir_cam[2]
     out.depth[worldid, out.depth_adr[camid] + pixelid] = depth
+
+
+@wp.func
+def write_guides(out: Outputs, worldid: int, adr: int, albedo: wp.vec3, normal: wp.vec3):
+  """Writes the first-hit guides (base colour, world-space shading normal) of an RGB pixel."""
+  out.albedo[worldid, adr] = albedo
+  out.normal[worldid, adr] = normal
 
 
 @wp.func
@@ -316,6 +331,8 @@ def kernel_key(m: Model, rc: PbrRenderContext, values: dict[str, Any]) -> tuple:
     rc.max_registers,
     rc.mesh_bvh_frame is not None,
     int(m.nlight),
+    rc.ray_direction is not None,
+    bool(rc.render_guides),
     baked,
   )
 
@@ -399,6 +416,11 @@ def cameras(m: Model, d: Data, rc: PbrRenderContext) -> Cameras:
   cams.nrender = rc.base.nrender
   cams.cam_res = rc.base.cam_res
   cams.cam_id_map = rc.base.cam_id_map
+  if rc.ray_origin is not None and rc.ray_direction is not None and rc.ray_adr is not None and rc.ray_res is not None:
+    cams.ray_origin = rc.ray_origin
+    cams.ray_direction = rc.ray_direction
+    cams.ray_adr = rc.ray_adr
+    cams.ray_res = rc.ray_res
   return cams
 
 
@@ -444,6 +466,8 @@ def outputs(rc: PbrRenderContext) -> Outputs:
   out.depth = base.depth_data
   out.seg = base.seg_data
   out.hdr = rc.hdr_data
+  out.albedo = rc.guide_albedo
+  out.normal = rc.guide_normal
   return out
 
 

@@ -365,11 +365,12 @@ class Pipeline:
 def _make_downsample(rc: PbrRenderContext, n: int) -> wp.Kernel:
   """Kernel averaging the n×n sub-pixel samples of the supersampled image.
 
-  As the megakernel's sample loop: each sample is tone mapped, the mean is encoded, and depth and
-  segmentation come from the first sample.
+  As the megakernel's sample loop: each sample is tone mapped, the mean is encoded, and depth,
+  segmentation and the guides come from the first sample.
   """
   display_transform = make_display_transform(rc.tone_mapper)
   render_hdr = rc.render_hdr
+  guides = bool(rc.render_guides)
   inv = 1.0 / float(n * n)
 
   @wp.kernel(module="unique", enable_backward=False, module_options=kernel_inputs.module_options(rc))
@@ -407,6 +408,9 @@ def _make_downsample(rc: PbrRenderContext, n: int) -> wp.Kernel:
       out.rgb[worldid, adr] = pack_rgba_to_uint32(
         srgb_oetf(c[0]) * 255.0 + 0.5, srgb_oetf(c[1]) * 255.0 + 0.5, srgb_oetf(c[2]) * 255.0 + 0.5, 255.0
       )
+      if wp.static(guides):
+        out.albedo[worldid, adr] = hi.albedo[worldid, hi.rgb_adr[camid] + first]
+        out.normal[worldid, adr] = hi.normal[worldid, hi.rgb_adr[camid] + first]
     if out.render_depth[camid]:
       out.depth[worldid, out.depth_adr[camid] + pixelid] = hi.depth[worldid, hi.depth_adr[camid] + first]
     if out.render_seg[camid]:
@@ -437,12 +441,16 @@ def _supersampled_context[NWorld: IntVar](rc: PbrRenderContext[NWorld], n: int) 
   hi.rgb_data = buffer(base.rgb_data, base.render_rgb, wp.uint32)
   hi.depth_data = buffer(base.depth_data, base.render_depth, float)
   hi.seg_data = buffer(base.seg_data, base.render_seg, wp.vec2i)
+  npixel_hi = base.rgb_data.shape[1] * n * n
+  nguide = npixel_hi if rc.render_guides else 1
   return dataclasses.replace(
     rc,
     base=hi,
     samples_per_pixel=1,
     render_hdr=True,
-    hdr_data=wp.zeros((nworld, base.rgb_data.shape[1] * n * n), dtype=wp.vec3),
+    hdr_data=wp.zeros((nworld, npixel_hi), dtype=wp.vec3),
+    guide_albedo=wp.zeros((nworld, nguide), dtype=wp.vec3),
+    guide_normal=wp.zeros((nworld, nguide), dtype=wp.vec3),
     _megakernel=None,
     _optix=None,
   )
@@ -481,12 +489,26 @@ class _Supersampling:
     view.samples_per_pixel = 1
     view.render_hdr = True
     view.hdr_data = self.rc_hi.hdr_data
+    view.guide_albedo = self.rc_hi.guide_albedo
+    view.guide_normal = self.rc_hi.guide_normal
     view._optix = None
     return view
 
   def downsample(self, m: Model, d: Data, rc: PbrRenderContext, hi: Outputs) -> None:
     # Cameras and outputs of rc, rebuilt when an array they read (kernel_inputs) is replaced.
-    key = (m.cam_projection, m.cam_fovy, m.cam_sensorsize, m.cam_intrinsic, d.cam_xpos, d.cam_xmat, rc.base, rc.hdr_data)
+    key = (
+      m.cam_projection,
+      m.cam_fovy,
+      m.cam_sensorsize,
+      m.cam_intrinsic,
+      d.cam_xpos,
+      d.cam_xmat,
+      rc.base,
+      rc.hdr_data,
+      rc.guide_albedo,
+      rc.guide_normal,
+      rc.ray_direction,
+    )
     if not _same(key, self._inputs_key):
       self._inputs = (kernel_inputs.cameras(m, d, rc), kernel_inputs.outputs(rc))
       self._inputs_key = key
