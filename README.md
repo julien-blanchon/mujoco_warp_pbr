@@ -217,6 +217,8 @@ pulls in Pyrefly and the `typing` extra (`pip install mujoco-warp-pbr[typing]`):
 with named dimensions, e.g. `wp.array[wp.vec3, [NWorld, H, W]]` or `np.ndarray[[H, W, 3], np.dtype[np.float32]]`,
 so image sizes, batch and channel counts are checked across calls; kernel signatures stay plain Warp
 (`wp.array2d[float]`). The annotations are type-checking-only (`from __future__ import annotations`), so a plain
-install needs neither Pyrefly nor the stubs.
+install needs neither Pyrefly nor the stubs. `uv sync --extra dev` is enough for `pyrefly check`: the
+benchmark-only packages (`bench` extra, OptiX, ovrtx, huggingface_hub) are listed in `ignore-missing-imports`, so
+their imports are untyped when absent and checked when installed.
 
 Design notes and literature: [`research/`](research/README.md).

@@ -106,8 +106,6 @@ convention = "google"
 "tests/*" = ["D"]
 "benchmarks/*" = ["D"]
 "tools/*" = ["D"]
-# TODO: remove after the library pass (rules added with the benchmark / tooling pass).
-"mujoco_warp_pbr/**" = ["B905", "BLE001", "C401", "F841", "RUF005", "RUF059", "UP006", "UP035", "UP045"]
 
 
 [tool.ruff.format]
@@ -130,30 +128,22 @@ include = ["mujoco_warp_pbr*"]
 preset = "default"
 search-path = [".", "benchmarks", "tools", "tools/hf", "newton-pbr"]
 project-excludes = ["context", "**/.venv"]
-# Optional packages without types: USD (compiled), OptiX / ovrtx bindings (not on PyPI), and
-# huggingface_hub (declared only in the inline metadata of the tools/hf scripts).
-ignore-missing-imports = ["pxr.*", "optix", "ovrtx", "huggingface_hub"]
-
-# Warp kernels in the library are not shape-typed yet, and Warp's DSL (array indexing, vector
-# arithmetic, struct fields) reads as errors without ranked annotations: off until the library port.
-[[tool.pyrefly.sub-config]]
-matches = "mujoco_warp_pbr/**"
-
-[tool.pyrefly.sub-config.errors]
-bad-index = "ignore"
-unsupported-operation = "ignore"
-not-iterable = "ignore"
-bad-unpacking = "ignore"
-
-# Same as above, until the library port.
-[[tool.pyrefly.sub-config]]
-matches = "newton-pbr/**"
-
-[tool.pyrefly.sub-config.errors]
-bad-index = "ignore"
-unsupported-operation = "ignore"
-not-iterable = "ignore"
-bad-unpacking = "ignore"
+# Optional packages: the `bench` extra (Newton, Mitsuba, glTF / mesh IO, FLIP, USD), OptiX / ovrtx bindings
+# (not on PyPI) and huggingface_hub (inline metadata of the tools/hf scripts). With only the `dev` extra
+# installed their imports resolve to Any instead of failing; once installed they are checked as usual.
+ignore-missing-imports = [
+  "newton",
+  "newton.*",
+  "mitsuba",
+  "pygltflib",
+  "trimesh",
+  "flip_evaluator",
+  "pxr",
+  "pxr.*",
+  "optix",
+  "ovrtx",
+  "huggingface_hub",
+]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]

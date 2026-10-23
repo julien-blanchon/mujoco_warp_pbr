@@ -33,7 +33,6 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Tuple
 
 import mujoco
 import numpy as np
@@ -373,14 +372,14 @@ class EnvironmentMap:
     self.width = w
 
 
-def sampling_distribution(image: np.ndarray, width: int = CDF_WIDTH) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def sampling_distribution(image: np.ndarray, width: int = CDF_WIDTH) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
   """Piecewise-constant distribution over equirect cells ∝ luminance · sin θ.
 
   Returns (cell probabilities (h, w), marginal row CDF (h + 1,), conditional column CDFs
   (h, w + 1)); probabilities sum to 1.
   """
   small = _downsample(np.asarray(image, dtype=np.float64)[..., :3], width)
-  h, w, _ = small.shape
+  h = small.shape[0]
   luminance = small @ np.array(LUMINANCE_WEIGHTS)
   sin_theta = np.sin((np.arange(h) + 0.5) / h * np.pi)[:, None]
   # A small floor keeps every direction reachable (unbiased MIS with BSDF sampling).
@@ -416,7 +415,7 @@ def sample_direction(
   env: int,
   yaw: float,
   u: wp.vec2,
-) -> Tuple[wp.vec3, float]:
+) -> tuple[wp.vec3, float]:
   """World direction drawn ∝ the environment's luminance, and its solid-angle pdf."""
   h = prob.shape[1]
   w = prob.shape[2]
@@ -518,7 +517,7 @@ def empty_environments() -> Environments:
   )
 
 
-def _downsampled_shape(shape: Tuple[int, ...], max_width: int) -> Tuple[int, int]:
+def _downsampled_shape(shape: tuple[int, ...], max_width: int) -> tuple[int, int]:
   """(height, width) of `_downsample` applied to an image of this shape."""
   h, w = shape[0], shape[1]
   while w > max_width:
@@ -526,7 +525,7 @@ def _downsampled_shape(shape: Tuple[int, ...], max_width: int) -> Tuple[int, int
   return h, w
 
 
-def _resize_nearest(image: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+def _resize_nearest(image: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
   h, w = shape
   ys = (np.arange(h) + 0.5) / h * image.shape[0]
   xs = (np.arange(w) + 0.5) / w * image.shape[1]

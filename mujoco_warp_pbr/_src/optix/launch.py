@@ -39,7 +39,7 @@ import dataclasses
 import os
 import re
 import warnings
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -275,7 +275,7 @@ class Pipeline:
           hitgroupEntryFunctionNameIS=entries[_intersection_name(gtype)],
         )
       )
-    self.groups = [raygen, miss] + hitgroups
+    self.groups = [raygen, miss, *hitgroups]
     link = optix.PipelineLinkOptions()
     link.maxTraceDepth = _MAX_TRACE_DEPTH
     self.pipeline = ctx.pipelineCreate(pco, link, self.groups, "")
@@ -323,7 +323,7 @@ class Pipeline:
       ptx = _compile_ptx(module, arch)
       try:
         return ctx.moduleCreate(mco, pco, ptx)[0], ptx
-      except Exception as e:  # e.g. "Target architecture invalid" from an older OptiX runtime
+      except Exception as e:  # noqa: BLE001 (e.g. "Target architecture invalid" from an older OptiX runtime)
         errors.append((arch, e))
     details = "; ".join(f"PTX for sm_{arch}: {e}" for arch, e in errors)
     raise RuntimeError(f"OptiX could not create the program module ({details})") from errors[0][1]
@@ -346,7 +346,7 @@ class Pipeline:
     for obj in (self.pipeline, *self.groups, self.module):
       try:
         obj.destroy()
-      except Exception as e:
+      except Exception as e:  # noqa: BLE001 (best effort: destroy the remaining objects)
         warnings.warn(f"destroying an OptiX object failed: {e}", stacklevel=2)
 
 
@@ -437,7 +437,7 @@ def _supersampled_context(rc: PbrRenderContext, n: int) -> PbrRenderContext:
 
 
 def _same(a: tuple, b: tuple) -> bool:
-  return len(a) == len(b) and all(x is y for x, y in zip(a, b))
+  return len(a) == len(b) and all(x is y for x, y in zip(a, b, strict=True))
 
 
 class _Supersampling:
@@ -521,7 +521,7 @@ class OptixRenderer:
     self.params.prim_geom = self.scene.prim_geom
     self.params.prim_visible = self.scene.prim_visible
     self.part_keys = {}
-    self.bridge: Optional[graph.Bridge] = None
+    self.bridge: graph.Bridge | None = None
     self.captured_handle = None
     self.closed = False
 

@@ -18,7 +18,7 @@ import enum
 import math
 import os
 import warnings
-from typing import Optional, Sequence, TypeVar, Union
+from collections.abc import Sequence
 
 import mujoco
 import mujoco_warp as mjw
@@ -57,11 +57,10 @@ _MESH_BVH_FRAMES = ("auto", "mujoco")
 _MESH_BVH_CONSTRUCTORS = ("cubql", "sah", "lbvh")
 _MATERIAL_KEYS = ("metallic", "roughness")
 
-EnvmapItem = Union[str, os.PathLike, np.ndarray]
-_Enum = TypeVar("_Enum", bound=enum.IntEnum)
+type EnvmapItem = str | os.PathLike | np.ndarray
 
 
-def _enum(cls: type[_Enum], value: int, name: str) -> _Enum:
+def _enum[E: enum.IntEnum](cls: type[E], value: int, name: str) -> E:
   try:
     return cls(value)
   except ValueError:
@@ -74,7 +73,7 @@ def _check_at_least(name: str, value: int, low: int):
     raise ValueError(f"{name} must be at least {low}, got {value}")
 
 
-def _check_default_material(default_material: Optional[dict]):
+def _check_default_material(default_material: dict | None):
   for key, value in (default_material or {}).items():
     if key not in _MATERIAL_KEYS:
       raise ValueError(f"default_material keys must be among {_MATERIAL_KEYS}, got {key!r}")
@@ -230,7 +229,7 @@ def _resolve_lighting(mjm: mujoco.MjModel, light_model: LightModel, ev100: float
   return _Lighting(exposure, light_intensity, math.pi, ambient)
 
 
-def _envmap_images(envmap: Union[EnvmapItem, Sequence[EnvmapItem], None]) -> list[np.ndarray]:
+def _envmap_images(envmap: EnvmapItem | Sequence[EnvmapItem] | None) -> list[np.ndarray]:
   if envmap is None:
     return []
   items = envmap if isinstance(envmap, (list, tuple)) else [envmap]
@@ -247,7 +246,7 @@ def _envmap_images(envmap: Union[EnvmapItem, Sequence[EnvmapItem], None]) -> lis
 
 
 def _build_environment(
-  mjm: mujoco.MjModel, envmap: Union[EnvmapItem, Sequence[EnvmapItem], None], use_skybox: bool, physical: bool
+  mjm: mujoco.MjModel, envmap: EnvmapItem | Sequence[EnvmapItem] | None, use_skybox: bool, physical: bool
 ) -> tuple[envmap_lib.Environments, bool, bool]:
   """Environment maps: explicit ones, else the MJCF skybox, else constant ambient.
 
@@ -281,10 +280,10 @@ def _surface_flags(
 def _tuning_defaults(
   base: mjw.RenderContext,
   tier: Tier,
-  block_dim: Optional[int],
-  max_registers: Optional[int],
-  ordered_traversal: Optional[bool],
-) -> tuple[Optional[int], int, bool]:
+  block_dim: int | None,
+  max_registers: int | None,
+  ordered_traversal: bool | None,
+) -> tuple[int | None, int, bool]:
   """Measured defaults of block_dim, max_registers and ordered_traversal (results/hf/tune_*.jsonl).
 
   On Ampere / Hopper, primitive-only scenes run fastest with 256-thread blocks and the ordered
@@ -325,14 +324,14 @@ def create_render_context(
   tone_mapper: ToneMapper | int = ToneMapper.PBR_NEUTRAL,
   ev100: float = DEFAULT_EV100,
   unset_material: UnsetMaterial | int = UnsetMaterial.GLTF,
-  default_material: Optional[dict[str, float]] = None,
+  default_material: dict[str, float] | None = None,
   use_textures: bool = True,
   samples_per_pixel: int = 1,
   specular_aa: bool = True,
   shadow_samples: int = 1,
   max_layers: int = 4,
   enable_reflections: bool = True,
-  envmap: Union[EnvmapItem, Sequence[EnvmapItem], None] = None,
+  envmap: EnvmapItem | Sequence[EnvmapItem] | None = None,
   envmap_intensity: float | None = None,
   envmap_rotation: float = 0.0,
   envmap_background: bool = True,

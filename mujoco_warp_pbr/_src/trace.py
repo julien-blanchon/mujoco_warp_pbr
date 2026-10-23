@@ -29,7 +29,7 @@ holds `geom_xmat @ R^T` for those mesh geoms, so distances, faces, barycentrics 
 are unchanged.
 """
 
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 import warp as wp
 from mujoco_warp import Data
@@ -194,7 +194,7 @@ def _make_query(cast: Callable) -> Callable:
   @wp.func
   def query(
     geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float, cull_backfaces: bool
-  ) -> Tuple[int, float, wp.vec3, float, float, int, int]:
+  ) -> tuple[int, float, wp.vec3, float, float, int, int]:
     return cast(
       geo.geom_type,
       geo.geom_dataid,
@@ -230,7 +230,7 @@ def _make_query(cast: Callable) -> Callable:
   return query
 
 
-def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: bool = False) -> Tuple[Callable, Callable]:
+def make_trace(geom_ray_types: tuple[int, ...], cull_backfaces: bool, ordered: bool = False) -> tuple[Callable, Callable]:
   """Returns (trace_closest, trace_any) specialised on the geom types present.
 
   ordered selects the nearest-first scene traversal of `traverse.py` (kernels inlining it need

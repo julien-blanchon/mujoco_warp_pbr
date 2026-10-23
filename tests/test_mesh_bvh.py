@@ -56,7 +56,7 @@ def test_mesh_bvh_constructor_replaces_bvhs(scene, frame):
   s = scene(XML, cam_res=(32, 24), mesh_bvh_constructor="sah", mesh_bvh_frame=frame).render()
   base = s.rc.base
   assert len(base.mesh_registry) == s.mjm.nmesh
-  assert set(int(i) for i in base.mesh_bvh_id.numpy()) == set(base.mesh_registry)
+  assert {int(i) for i in base.mesh_bvh_id.numpy()} == set(base.mesh_registry)
   if frame == "auto":
     assert s.rc.mesh_bvh_frame is not None
   np.testing.assert_allclose(s.rgb(), reference.rgb(), atol=1.5 / 255)

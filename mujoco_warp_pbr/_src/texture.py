@@ -21,7 +21,7 @@ mapping along the surface. The derivatives give both the normal-map tangent fram
 texture LOD of a ray cone (Akenine-Möller et al. 2019).
 """
 
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 import mujoco
 import numpy as np
@@ -54,7 +54,7 @@ def is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
   return bool(np.isin(tex_id, mjm.mat_texid[:, _COLOR_ROLES]))
 
 
-def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> Tuple[list[wp.Texture2D], np.ndarray]:
+def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> tuple[list[wp.Texture2D], np.ndarray]:
   """Creates mipmapped GPU textures for the 2D textures in `used`.
 
   sRGB textures become linear float16 (so filtering and mipmaps are linear); data textures stay
@@ -94,7 +94,7 @@ def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> Tuple[list[wp.Text
 
 
 @wp.func
-def orthonormal_basis(n: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
+def orthonormal_basis(n: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
   """Branchless orthonormal basis (Duff et al. 2017)."""
   sign = wp.where(n[2] >= 0.0, 1.0, -1.0)
   a = -1.0 / (sign + n[2])
@@ -102,7 +102,7 @@ def orthonormal_basis(n: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   return wp.vec3(1.0 + sign * n[0] * n[0] * a, sign * b, -sign * n[0]), wp.vec3(b, sign + n[1] * n[1] * a, -n[1])
 
 
-def make_primitive_uv(geom_types: Tuple[int, ...]) -> Callable:
+def make_primitive_uv(geom_types: tuple[int, ...]) -> Callable:
   """Build MuJoCo's analytic UV mapping for the primitive types present.
 
   Returns (uv, repeat, offset); the texture coordinate is uv ⊙ repeat + offset. Keeping uv
@@ -117,7 +117,7 @@ def make_primitive_uv(geom_types: Tuple[int, ...]) -> Callable:
     size: wp.vec3,
     repeat: wp.vec2,
     uniform: bool,
-  ) -> Tuple[wp.vec2, wp.vec2, wp.vec2]:
+  ) -> tuple[wp.vec2, wp.vec2, wp.vec2]:
     uv = wp.vec2(0.0)
     offset = wp.vec2(0.0)
     rep = repeat
@@ -156,7 +156,7 @@ def frame_from_uv_jacobian(
   t2: wp.vec3,
   du_dt: wp.vec2,
   dv_dt: wp.vec2,
-) -> Tuple[wp.vec3, wp.vec3, float]:
+) -> tuple[wp.vec3, wp.vec3, float]:
   """Tangent (∂p/∂u), bitangent (∂p/∂v) and UV-per-length from the UV Jacobian on (t1, t2)."""
   det = du_dt[0] * dv_dt[1] - du_dt[1] * dv_dt[0]
   inv = 1.0 / wp.where(wp.abs(det) > 1.0e-20, det, 1.0e-20)
@@ -183,7 +183,7 @@ def mesh_triangle_frame(
   bary_u: float,
   bary_v: float,
   repeat: wp.vec2,
-) -> Tuple[bool, wp.vec2, wp.vec3, wp.vec3, float]:
+) -> tuple[bool, wp.vec2, wp.vec3, wp.vec3, float]:
   """(has_uv, uv, tangent, bitangent, uv_per_length) of a mesh hit, in the mesh frame."""
   tc_adr = mesh_texcoord_offsets[mesh_id]
   if tc_adr < 0:

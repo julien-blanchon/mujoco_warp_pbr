@@ -15,7 +15,7 @@
 
 """Thread -> camera pixel assignment and camera rays, shared by both tiers."""
 
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 import warp as wp
 from mujoco_warp._src.render_util import compute_ray
@@ -37,7 +37,7 @@ _MIN_FORWARD = 1.0e-6
 
 
 @wp.func
-def thread_ids(order: int, i: int, j: int) -> Tuple[int, int]:
+def thread_ids(order: int, i: int, j: int) -> tuple[int, int]:
   """(worldid, rayid) of thread (i, j) = wp.tid() of a `kernel_inputs.launch_dim` launch."""
   if order == wp.static(int(RenderOrder.WORLD)):
     return j, i
@@ -142,7 +142,7 @@ def headlight_dir(pix: Pixel) -> wp.vec3:
 
 
 @wp.func
-def camera_frame_ray(pix: Pixel, subdiv: int, sx: int, sy: int, znear: float) -> Tuple[wp.vec3, wp.vec3]:
+def camera_frame_ray(pix: Pixel, subdiv: int, sx: int, sy: int, znear: float) -> tuple[wp.vec3, wp.vec3]:
   """(direction, origin offset) in the camera frame of the ray through sub-pixel cell (sx, sy).
 
   The pixel is divided into subdiv × subdiv cells; the ray goes through the centre of cell
@@ -162,7 +162,7 @@ def camera_frame_ray(pix: Pixel, subdiv: int, sx: int, sy: int, znear: float) ->
 
 
 @wp.func
-def camera_ray(pix: Pixel, subdiv: int, sx: int, sy: int, znear: float) -> Tuple[wp.vec3, wp.vec3, wp.vec3]:
+def camera_ray(pix: Pixel, subdiv: int, sx: int, sy: int, znear: float) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """(world origin, world direction, camera-frame direction) of `camera_frame_ray`."""
   ray_dir_cam, ray_offset_cam = camera_frame_ray(pix, subdiv, sx, sy, znear)
   return pix.xpos + pix.xmat @ ray_offset_cam, pix.xmat @ ray_dir_cam, ray_dir_cam

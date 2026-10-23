@@ -21,7 +21,7 @@ optionally adds one mirror reflection and continues through translucent layers, 
 Render settings are read from `kernel_inputs.Settings`; the baked ones are compile-time constants.
 """
 
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 import warp as wp
 from mujoco_warp import Data
@@ -287,7 +287,7 @@ def make_render_pixel(m: Model, rc: PbrRenderContext, trace_closest: Callable, t
     headlight_dir: wp.vec3,
     seed: int,
     stream: int,
-  ) -> Tuple[wp.vec3, trace.Hit]:
+  ) -> tuple[wp.vec3, trace.Hit]:
     """Radiance along a camera ray and its first hit.
 
     Random streams: `stream` shades the camera ray's surfaces, `stream + 1` the mirror bounce.

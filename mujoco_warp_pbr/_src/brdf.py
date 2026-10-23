@@ -19,8 +19,6 @@ Formulas follow Filament's `shaders/src/surface_brdf.fs` and the Filament PBR do
 Roughness arguments named `alpha` are the remapped roughness α = perceptual_roughness².
 """
 
-from typing import Tuple
-
 import warp as wp
 
 from mujoco_warp_pbr._src.color import luminance
@@ -106,7 +104,7 @@ def coupled_diffuse(base_color: wp.vec3, metallic: float, spec_albedo: wp.vec3) 
 
 
 @wp.func
-def roughness_to_alpha(perceptual_roughness: float) -> Tuple[float, float]:
+def roughness_to_alpha(perceptual_roughness: float) -> tuple[float, float]:
   """Clamps perceptual roughness and returns (perceptual_roughness, alpha)."""
   pr = wp.clamp(perceptual_roughness, wp.static(MIN_PERCEPTUAL_ROUGHNESS), 1.0)
   return pr, pr * pr

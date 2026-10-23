@@ -28,7 +28,7 @@ MuJoCo Warp's traversal. Flex geometry is not supported here (callers fall back 
 """
 
 import ctypes
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 import warp as wp
 from mujoco_warp._src.ray import RAY_TOL_ABS
@@ -122,7 +122,7 @@ def _ray_aabb(origin: wp.vec3, rcp_dir: wp.vec3, lower: wp.vec3, upper: wp.vec3,
   return -1.0
 
 
-def make_ordered_cast(geom_ray_types: Tuple[int, ...], first_hit: bool) -> Callable:
+def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Callable:
   """Drop-in replacement of MuJoCo Warp's `_make_cast_ray` (same arguments and results)."""
   types = set(geom_ray_types)
 
@@ -141,7 +141,7 @@ def make_ordered_cast(geom_ray_types: Tuple[int, ...], first_hit: bool) -> Calla
     direction: wp.vec3,
     max_t: float,
     cull_backfaces: bool,
-  ) -> Tuple[float, wp.vec3, float, float, int, int]:
+  ) -> tuple[float, wp.vec3, float, float, int, int]:
     """Distance, normal, barycentrics, face and mesh id of the ray against one geom."""
     gtype = geom_type[gi]
     d = float(-1.0)
@@ -223,7 +223,7 @@ def make_ordered_cast(geom_ray_types: Tuple[int, ...], first_hit: bool) -> Calla
     ray_dir_world: wp.vec3,
     max_dist: float,
     cull_backfaces: bool,
-  ) -> Tuple[int, float, wp.vec3, float, float, int, int]:
+  ) -> tuple[int, float, wp.vec3, float, float, int, int]:
     dist = max_dist
     normal = wp.vec3(0.0)
     geom_id = int(-1)

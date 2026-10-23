@@ -28,7 +28,8 @@ SDK headers (github.com/NVIDIA/optix-dev) found through OPTIX_INCLUDE_DIR.
 Nothing here imports PyOptiX at module import time.
 """
 
-from typing import TYPE_CHECKING, Iterable, Optional
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from mujoco_warp_pbr._src.optix.device import AVAILABLE as AVAILABLE
 from mujoco_warp_pbr._src.optix.device import UNAVAILABLE_REASON as UNAVAILABLE_REASON
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
   from mujoco_warp_pbr._src.types import PbrRenderContext
 
 
-def unavailable_reason(mjm: "mujoco.MjModel", enabled_geom_groups: Iterable[int], tier: int) -> Optional[str]:
+def unavailable_reason(mjm: "mujoco.MjModel", enabled_geom_groups: Iterable[int], tier: int) -> str | None:
   """None if traversal="optix" can render this model, else the reason it cannot."""
   import warp as wp
 
@@ -53,7 +54,7 @@ def unavailable_reason(mjm: "mujoco.MjModel", enabled_geom_groups: Iterable[int]
     return "it needs a CUDA device"
   try:
     import optix  # noqa: F401
-  except Exception as e:  # ImportError, or a missing CUDA runtime library
+  except Exception as e:  # noqa: BLE001 (ImportError, or a missing CUDA runtime library)
     return f"PyOptiX is not available ({e})"
 
   from mujoco_warp_pbr._src.optix import accel

@@ -15,7 +15,7 @@
 
 import dataclasses
 import enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import warp as wp
 from mujoco_warp import RenderContext
@@ -262,7 +262,7 @@ class PbrRenderContext:
   max_layers: int
   has_reflection: bool
   render_order: int
-  block_dim: Optional[int]
+  block_dim: int | None
   max_registers: int
   ordered_traversal: bool
   tier: int
@@ -285,14 +285,14 @@ class PbrRenderContext:
   denoise_sigma_depth: float = 0.02
   denoise_sigma_albedo: float = 0.05
   optix_rebuild_every: int = 0
-  optix_max_registers: Optional[int] = None
+  optix_max_registers: int | None = None
   optix_graph_capture: bool = False
-  mesh_bvh_frame: Optional[wp.array[wp.mat33]] = None
-  trace_mesh_bvh_id: Optional[wp.array[wp.uint64]] = None
-  trace_mesh_registry: Optional[list[wp.Mesh]] = None
-  geom_xmat_trace: Optional[wp.array2d[wp.mat33]] = None
+  mesh_bvh_frame: wp.array[wp.mat33] | None = None
+  trace_mesh_bvh_id: wp.array[wp.uint64] | None = None
+  trace_mesh_registry: list[wp.Mesh] | None = None
+  geom_xmat_trace: wp.array2d[wp.mat33] | None = None
   baked: frozenset[str] = DEFAULT_BAKED
-  _megakernel: Optional[wp.Kernel] = None
-  _megakernel_key: Optional[tuple] = None
+  _megakernel: wp.Kernel | None = None
+  _megakernel_key: tuple | None = None
   _optix: Any = None
   _host_cache: dict[str, Any] = dataclasses.field(default_factory=dict)

@@ -38,7 +38,8 @@ refitted or rebuilt (`Scene.build`, the OptiX calls).
 import dataclasses
 import logging
 import os
-from typing import Any, ClassVar, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any, ClassVar
 
 import mujoco
 import numpy as np
@@ -451,7 +452,7 @@ class Scene:
     base: RenderContext,
     nworld: int,
     rebuild_every: int = 0,
-    mesh_frame: Optional[np.ndarray] = None,
+    mesh_frame: np.ndarray | None = None,
   ):
     import optix
 
@@ -516,7 +517,7 @@ class Scene:
     gas.build(_stream())
     return gas
 
-  def _mesh_gases(self, base: RenderContext, mesh_frame: Optional[np.ndarray]):
+  def _mesh_gases(self, base: RenderContext, mesh_frame: np.ndarray | None):
     """Triangle GAS per mesh, from MuJoCo Warp's mesh BVH vertices / indices, in frame R."""
     self.mesh_gas = []
     handles, lower, upper = [], [], []
@@ -545,7 +546,7 @@ class Scene:
     vertices, faces = _unit_cube()
     return self._triangle_gas(wp.array(vertices, dtype=wp.vec3), wp.array(faces, dtype=wp.uint32))
 
-  def _curve_gas(self) -> Optional[_Accel]:
+  def _curve_gas(self) -> _Accel | None:
     """World-space linear-curve GAS of spheres and capsules (one SBT record), built per frame."""
     import optix
 
@@ -571,7 +572,7 @@ class Scene:
     keep = (self.curve_vertices, self.curve_widths, self.curve_index)
     return _Accel(self.ctx, curves, dynamic_build_flags(), keep=keep)
 
-  def _prim_gas(self, geom_type: np.ndarray) -> Optional[_Accel]:
+  def _prim_gas(self, geom_type: np.ndarray) -> _Accel | None:
     """World-space custom-primitive GAS (one SBT record per primitive type), built per frame."""
     import optix
 
@@ -701,10 +702,10 @@ class Scene:
     self.frames += 1
 
 
-def supported(mjm: mujoco.MjModel, enabled_geom_groups: Iterable[int]) -> Optional[str]:
+def supported(mjm: mujoco.MjModel, enabled_geom_groups: Iterable[int]) -> str | None:
   """None if the model's rendered geometry is supported by the OptiX backend, else why not."""
   rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
-  types = set(int(t) for t in mjm.geom_type[rendered])
+  types = {int(t) for t in mjm.geom_type[rendered]}
   if mjm.nflex:
     return "flex geometry"
   unsupported = {int(GeomType.HFIELD): "height fields", int(GeomType.SDF): "SDF geoms"}

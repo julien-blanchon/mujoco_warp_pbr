@@ -23,7 +23,8 @@ constants instead:
 one rebuilds the kernel.
 """
 
-from typing import Any, Callable, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import warp as wp
 from mujoco_warp import Data
@@ -223,7 +224,7 @@ def write_geometry(
 
 
 @wp.func
-def env_lookup(env: Environment, worldid: int) -> Tuple[int, float, float]:
+def env_lookup(env: Environment, worldid: int) -> tuple[int, float, float]:
   """(environment map id, yaw, radiance scale) of a world."""
   return (
     env.env_id[worldid % env.env_id.shape[0]],

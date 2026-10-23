@@ -56,7 +56,7 @@ import ctypes
 import sys
 import threading
 import weakref
-from typing import Optional, Protocol
+from typing import Protocol
 
 import warp as wp
 
@@ -137,14 +137,14 @@ class Bridge:
       if result != 0:
         raise RuntimeError(f"cuStreamCreate failed (CUresult {result})")
       self._stream_handle = handle.value
-      self.stream: Optional[wp.Stream] = wp.Stream(device, cuda_stream=handle.value)
+      self.stream: wp.Stream | None = wp.Stream(device, cuda_stream=handle.value)
     self._request = _semaphore(self._libc)
     self._done = _semaphore(self._libc)
     # Held while the worker runs the owner's work; reentrant: the owner may be collected (and
     # close its bridge) on the worker thread.
     self._lock = threading.RLock()
     self._closed = False
-    self.error: Optional[BaseException] = None
+    self.error: BaseException | None = None
     self._thread = threading.Thread(target=self._run, name="mujoco_warp_pbr-optix-graph", daemon=True)
     self._thread.start()
 
@@ -165,7 +165,7 @@ class Bridge:
           with wp.ScopedDevice(self._device):
             owner.graph_work(stream)
             wp.synchronize_stream(stream)
-      except BaseException as e:  # reported by raise_error; the graph must not hang
+      except BaseException as e:  # noqa: BLE001 (reported by raise_error; the graph must not hang)
         self.error = e
       finally:
         # No references while idle: collecting the owner closes this bridge (and its stream).
@@ -210,5 +210,5 @@ class Bridge:
   def __del__(self):
     try:
       self.close()
-    except Exception:
+    except Exception:  # noqa: BLE001 (interpreter shutdown: nothing left to report to)
       pass

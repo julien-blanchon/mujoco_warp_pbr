@@ -16,7 +16,6 @@
 """Punctual light evaluation for the physical and MuJoCo light models."""
 
 import math
-from typing import Tuple
 
 import mujoco
 import numpy as np
@@ -149,7 +148,7 @@ def fallback_intensity(mjm: mujoco.MjModel, mjd: mujoco.MjData, light_id: int, e
 
 
 @wp.func
-def eval_light(light: Light, light_model: int, has_spot: bool, point: wp.vec3) -> Tuple[wp.vec3, float, wp.vec3, wp.vec3]:
+def eval_light(light: Light, light_model: int, has_spot: bool, point: wp.vec3) -> tuple[wp.vec3, float, wp.vec3, wp.vec3]:
   """Returns (direction to light, distance, diffuse radiance scale, specular radiance scale).
 
   The scales multiply the BRDF lobes times NoL; zero scales mean the light does not reach the

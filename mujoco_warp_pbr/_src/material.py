@@ -19,7 +19,7 @@ The surface is glTF-core metallic-roughness. Extra lobes (clearcoat, sheen, ...)
 fields to `Surface` and terms to the shading functions; nothing else depends on its layout.
 """
 
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import mujoco
 import numpy as np
@@ -101,7 +101,7 @@ def effective_geom_rgba(mjm: mujoco.MjModel) -> np.ndarray:
   return rgba
 
 
-def _heuristic(rgba: np.ndarray, shininess: float, has_material: bool) -> Tuple[float, float, float]:
+def _heuristic(rgba: np.ndarray, shininess: float, has_material: bool) -> tuple[float, float, float]:
   """mujofil-style (metallic, roughness, reflectance) guess from a flat colour."""
   r, g, b = rgba[:3]
   if not has_material:
@@ -130,8 +130,8 @@ def _heuristic(rgba: np.ndarray, shininess: float, has_material: bool) -> Tuple[
 def resolve_geom_materials(
   mjm: mujoco.MjModel,
   unset_material: int = UnsetMaterial.GLTF,
-  default_material: Optional[dict] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+  default_material: dict | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
   """Resolves (metallic, perceptual roughness, reflectance) per geom.
 
   Authored material values always win. Unset values (MuJoCo's -1) come from
@@ -283,7 +283,7 @@ def _widen_roughness(perceptual_roughness: float, alpha2_extra: float) -> float:
   return wp.sqrt(wp.sqrt(a2))
 
 
-def make_eval_surface(geom_types: Tuple[int, ...]) -> Callable:
+def make_eval_surface(geom_types: tuple[int, ...]) -> Callable:
   """Build the surface evaluation func specialised on the geom types present.
 
   Material features (texture roles, specular anti-aliasing, vertex normals) are read from
@@ -303,7 +303,7 @@ def make_eval_surface(geom_types: Tuple[int, ...]) -> Callable:
     point: wp.vec3,
     direction: wp.vec3,
     footprint: float,
-  ) -> Tuple[Surface, wp.vec3]:
+  ) -> tuple[Surface, wp.vec3]:
     """Surface parameters and the viewer-facing shading normal at a hit.
 
     `footprint` is the ray-cone width at the hit point (before projection on the surface).

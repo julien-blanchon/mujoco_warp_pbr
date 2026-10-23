@@ -32,7 +32,7 @@ An occlusion trace uses one register: 1 if anything is hit, 0 after the miss pro
 import ctypes
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import warp as wp
 
@@ -152,7 +152,7 @@ class _TraceResult(ctypes.Structure):
 # used by the ordered software traversal, `traverse.py`).
 AVAILABLE = hasattr(wp, "build_experimental") and hasattr(wp, "ModuleBuildOptions")
 # Why not (None when AVAILABLE).
-UNAVAILABLE_REASON: Optional[str] = None if AVAILABLE else "Warp >= 1.18 is required"
+UNAVAILABLE_REASON: str | None = None if AVAILABLE else "Warp >= 1.18 is required"
 
 if AVAILABLE:
   wp.build_experimental.add_native_type(
@@ -184,7 +184,7 @@ if AVAILABLE:
     wp.build_experimental.add_builtin(f"mjpbr_optix_{_name}", _inputs, _value_type, native_name=f"mjpbr_optix::{_name}")
 
 
-def include_dir() -> Optional[Path]:
+def include_dir() -> Path | None:
   """OptiX SDK include directory (holding optix_device.h), or None if not found.
 
   Looked up from `OPTIX_INCLUDE_DIR`, then `OPTIX_ROOT` / `OptiX_INSTALL_DIR` (+ /include).

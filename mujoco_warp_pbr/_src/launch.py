@@ -17,7 +17,8 @@
 
 import dataclasses
 import warnings
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import warp as wp

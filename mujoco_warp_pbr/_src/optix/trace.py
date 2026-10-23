@@ -34,8 +34,6 @@ Hits by geom type (see `accel.py`):
   `ray_*` functions (`make_intersection`).
 """
 
-from typing import Tuple
-
 import warp as wp
 from mujoco_warp._src.ray import RAY_TOL_REL
 from mujoco_warp._src.ray import ray_capsule
@@ -151,7 +149,7 @@ def clip_to_cell(frame: wp.array[wp.vec3], origin: wp.vec3, direction: wp.vec3, 
 
 
 @wp.func
-def world_geom(index: int, geoms: wp.array[int]) -> Tuple[int, int]:
+def world_geom(index: int, geoms: wp.array[int]) -> tuple[int, int]:
   """(world, geom) of primitive `world · len(geoms) + k` (geom geoms[k]) of a world-space GAS."""
   n = geoms.shape[0]
   worldid = index // n
@@ -159,19 +157,19 @@ def world_geom(index: int, geoms: wp.array[int]) -> Tuple[int, int]:
 
 
 @wp.func
-def geom_pose(geo: Geometry, worldid: int, gi: int) -> Tuple[wp.vec3, wp.mat33, wp.vec3]:
+def geom_pose(geo: Geometry, worldid: int, gi: int) -> tuple[wp.vec3, wp.mat33, wp.vec3]:
   """Position on the world's cell, rotation and size of geom gi of world worldid."""
   pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
   return pos, geo.geom_xmat[worldid, gi], geo.geom_size[worldid % geo.geom_size.shape[0], gi]
 
 
-def _plane_vector(plane_ids: Tuple[int, ...]):
+def _plane_vector(plane_ids: tuple[int, ...]):
   return wp.types.vector(length=max(len(plane_ids), 1), dtype=wp.int32)(*(plane_ids or (0,)))
 
 
 def _make_plane_hit(cull_backfaces: bool) -> wp.Function:
   @wp.func
-  def plane_hit(geo: Geometry, worldid: int, gi: int, origin: wp.vec3, direction: wp.vec3) -> Tuple[float, wp.vec3]:
+  def plane_hit(geo: Geometry, worldid: int, gi: int, origin: wp.vec3, direction: wp.vec3) -> tuple[float, wp.vec3]:
     """Distance (< 0: no hit) and normal of plane gi; transparent planes are not hit."""
     d = float(-1.0)
     n = wp.vec3(0.0)
@@ -193,13 +191,13 @@ def _make_plane_hit(cull_backfaces: bool) -> wp.Function:
 
 
 def make_trace(
-  plane_ids: Tuple[int, ...],
+  plane_ids: tuple[int, ...],
   has_mesh: bool,
   has_box: bool,
   has_instances: bool,
   cull_backfaces: bool,
   closest_ray_flags: int,
-) -> Tuple[wp.Function, wp.Function]:
+) -> tuple[wp.Function, wp.Function]:
   """Returns (trace_closest, trace_any) with the signatures of `trace.make_trace`.
 
   Args:
@@ -287,7 +285,7 @@ def make_trace(
 
 
 @wp.func
-def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> Tuple[float, wp.vec3, int]:
+def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> tuple[float, wp.vec3, int]:
   """Closest hit on curve segment `world · ncurve + k` (sphere or capsule geom curve_geom[k]).
 
   Re-runs MuJoCo Warp's `ray_sphere` / `ray_capsule` on the world ray; if that disagrees with
@@ -325,7 +323,7 @@ def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
   """
 
   @wp.func
-  def intersect(geo: Geometry, prim_geom: wp.array[int], prim_visible: wp.array[wp.int32]) -> Tuple[float, wp.vec3, int]:
+  def intersect(geo: Geometry, prim_geom: wp.array[int], prim_visible: wp.array[wp.int32]) -> tuple[float, wp.vec3, int]:
     index = wp.mjpbr_optix_primitive_index()
     d = float(-1.0)
     n = wp.vec3(0.0)
