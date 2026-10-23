@@ -101,7 +101,7 @@ def _rgbe(image: np.ndarray) -> np.ndarray:
   return np.concatenate([mantissa, (exponent + 128).clip(0, 255).astype(np.uint8)[..., None]], axis=-1)
 
 
-def _rle_channel(values: np.ndarray) -> bytes:
+def _rle_channel(values: np.ndarray[[int], np.dtype[np.uint8]]) -> bytes:
   """Adaptive run-length encoding of one scanline channel (runs >= 3, else literals)."""
   out = bytearray()
   i, n = 0, len(values)
@@ -110,7 +110,7 @@ def _rle_channel(values: np.ndarray) -> bytes:
     while i + run < n and run < 127 and values[i + run] == values[i]:
       run += 1
     if run >= 3:
-      out += bytes([128 + run, values[i]])
+      out += bytes([128 + run, int(values[i])])
       i += run
       continue
     j = i

@@ -336,12 +336,14 @@ def time_graph(step, iters: int, repeats: int) -> list[float]:
   with wp.ScopedCapture() as capture:
     for _ in range(iters):
       step()
-  wp.capture_launch(capture.graph)
+  captured = capture.graph  # None only when the capture failed
+  assert captured is not None
+  wp.capture_launch(captured)
   wp.synchronize()
   times = []
   for _ in range(repeats):
     start = time.perf_counter()
-    wp.capture_launch(capture.graph)
+    wp.capture_launch(captured)
     wp.synchronize()
     times.append((time.perf_counter() - start) / iters)
   return times

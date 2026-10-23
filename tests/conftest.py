@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import cast
 
 import mujoco
 import mujoco_warp as mjw
@@ -48,13 +49,13 @@ class Scene:
     w, h = self.rc.base.cam_res.numpy()[camera]
     out = wp.zeros((self.d.nworld, h, w), dtype=wp.vec3)
     mjpbr.get_rgb(self.rc, camera, out)
-    return out.numpy()
+    return cast("Images", out.numpy())  # wp.array.numpy() has no declared return type in the stubs
 
   def hdr(self, camera: int = 0) -> Images:
     w, h = self.rc.base.cam_res.numpy()[camera]
     out = wp.zeros((self.d.nworld, h, w), dtype=wp.vec3)
     mjpbr.get_hdr(self.rc, camera, out)
-    return out.numpy()
+    return cast("Images", out.numpy())  # wp.array.numpy() has no declared return type in the stubs
 
 
 def make_scene(xml: str, nworld: int = 1, cam_res=(32, 32), **kwargs) -> Scene:

@@ -195,13 +195,15 @@ def test_graph_capture_matches_eager(samples_per_pixel):
   mjpbr.render(m, d, rc)  # compiles and builds outside the capture
   with wp.ScopedCapture() as capture:
     mjpbr.render(m, d, rc)
+  captured = capture.graph  # None only when the capture failed
+  assert captured is not None
   for seed in range(3):
     _move(m, d, mjd, seed)
     mjpbr.render(m, d, rc)
     eager = _outputs(rc)
     for a in (rc.base.rgb_data, rc.base.depth_data, rc.base.seg_data):
       a.zero_()
-    wp.capture_launch(capture.graph)
+    wp.capture_launch(captured)
     wp.synchronize()  # before the pageable copies of _outputs (see PbrRenderContext)
     graph = _outputs(rc)
     assert (eager[2][..., 0] == 6).sum() > 20  # the moving mesh is in view

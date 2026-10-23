@@ -66,7 +66,10 @@ class _Gltf:
 
   def __init__(self, path: Path):
     self.path = path
-    self.doc = pygltflib.GLTF2().load(str(path))
+    doc = pygltflib.GLTF2().load(str(path))
+    if doc is None:  # a binary glTF without a JSON chunk
+      raise ValueError(f"{path}: no glTF document found")
+    self.doc = doc
     self._buffers = {}
 
   def _buffer(self, index: int) -> bytes:
@@ -89,6 +92,8 @@ class _Gltf:
     acc = self.doc.accessors[index]
     if acc.sparse is not None:
       raise NotImplementedError("sparse accessors are not supported")
+    if acc.bufferView is None:
+      raise NotImplementedError("accessors without a bufferView (all zeros) are not supported")
     dtype = np.dtype(_COMPONENT_DTYPE[acc.componentType])
     ncomp = _TYPE_SIZE[acc.type]
     view = self.doc.bufferViews[acc.bufferView]
@@ -109,7 +114,10 @@ class _Gltf:
   def image(self, texture_index: int | None) -> Image.Image:
     if texture_index is None:
       raise ValueError(f"{self.path}: texture reference without an index")
-    image = self.doc.images[self.doc.textures[texture_index].source]
+    source = self.doc.textures[texture_index].source
+    if source is None:
+      raise ValueError(f"{self.path}: texture {texture_index} without an image source")
+    image = self.doc.images[source]
     if image.bufferView is not None:
       return Image.open(io.BytesIO(self._view_bytes(image.bufferView)))
     if image.uri.startswith("data:"):
@@ -292,7 +300,7 @@ class _Converter:
   def run(self) -> Path:
     doc = self.gltf.doc
     scene = doc.scenes[doc.scene if doc.scene is not None else 0]
-    for node_index in scene.nodes:
+    for node_index in scene.nodes or []:
       self.node(node_index, _Y_UP_TO_Z_UP)
 
     offset, factor = np.zeros(3), 1.0
