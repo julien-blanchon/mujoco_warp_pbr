@@ -19,7 +19,7 @@ The surface is glTF-core metallic-roughness. Extra lobes (clearcoat, sheen, ...)
 fields to `Surface` and terms to the shading functions; nothing else depends on its layout.
 """
 
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import mujoco
 import numpy as np
@@ -29,9 +29,14 @@ from mujoco_warp._src.render import _geom_rgba
 from mujoco_warp._src.render import vertex_normal
 from mujoco_warp._src.types import GeomType
 
+from mujoco_warp_pbr._src import brdf
+from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import texture
+from mujoco_warp_pbr._src.color import LUMINANCE_WEIGHTS
+from mujoco_warp_pbr._src.kernel_inputs import Settings
 from mujoco_warp_pbr._src.trace import Geometry
 from mujoco_warp_pbr._src.trace import Hit
+from mujoco_warp_pbr._src.types import PbrRenderContext
 from mujoco_warp_pbr._src.types import UnsetMaterial
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
@@ -79,6 +84,23 @@ class Surface:
   occlusion: float
 
 
+# MuJoCo's default geom rgba: geoms with a material and this colour show the material's colour.
+_DEFAULT_GEOM_RGBA = (0.5, 0.5, 0.5, 1.0)
+
+
+def effective_geom_rgba(mjm: mujoco.MjModel) -> np.ndarray:
+  """(ngeom, 4) rgba each geom renders with (host-side MuJoCo Warp `_geom_rgba`).
+
+  A geom with a material that keeps MuJoCo's default rgba shows the material's colour.
+  """
+  rgba = np.array(mjm.geom_rgba, dtype=np.float64).reshape(-1, 4)
+  if not mjm.nmat:
+    return rgba
+  inherit = (mjm.geom_matid >= 0) & np.all(np.isclose(rgba, _DEFAULT_GEOM_RGBA), axis=1)
+  rgba[inherit] = mjm.mat_rgba[mjm.geom_matid[inherit]]
+  return rgba
+
+
 def _heuristic(rgba: np.ndarray, shininess: float, has_material: bool) -> Tuple[float, float, float]:
   """mujofil-style (metallic, roughness, reflectance) guess from a flat colour."""
   r, g, b = rgba[:3]
@@ -89,7 +111,7 @@ def _heuristic(rgba: np.ndarray, shininess: float, has_material: bool) -> Tuple[
     if brightness > 0.8 or (r > 0.7 and g < 0.3):
       return 0.0, 0.4, 0.25
     return 0.0, 0.5, 0.2
-  lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  lum = float(np.dot(rgba[:3], LUMINANCE_WEIGHTS))
   chroma = max(r, g, b) - min(r, g, b)
   metallic, roughness, reflectance = 0.0, 0.42, 0.6
   if lum > 0.75 and chroma < 0.10:
@@ -126,12 +148,11 @@ def resolve_geom_materials(
   roughness = np.zeros(mjm.ngeom, dtype=np.float32)
   reflectance = np.zeros(mjm.ngeom, dtype=np.float32)
 
+  geom_rgba = effective_geom_rgba(mjm)
   for g in range(mjm.ngeom):
     mat = mjm.geom_matid[g]
     has_material = mat >= 0
-    rgba = mjm.geom_rgba[g]
-    if has_material and np.allclose(rgba, [0.5, 0.5, 0.5, 1.0]):
-      rgba = mjm.mat_rgba[mat]
+    rgba = geom_rgba[g]
     shininess = float(mjm.mat_shininess[mat]) if has_material else _DEFAULT_SHININESS
     specular = float(mjm.mat_specular[mat]) if has_material else _DEFAULT_SPECULAR
     authored_m = float(mjm.mat_metallic[mat]) if has_material else -1.0
@@ -224,7 +245,7 @@ class Materials:
   tex_size: wp.array[wp.vec2]
 
 
-def materials(m: Model, rc) -> Materials:
+def materials(m: Model, rc: PbrRenderContext) -> Materials:
   mats = Materials()
   mats.mesh_vertadr = m.mesh_vertadr
   mats.mesh_faceadr = m.mesh_faceadr
@@ -262,17 +283,21 @@ def _widen_roughness(perceptual_roughness: float, alpha2_extra: float) -> float:
   return wp.sqrt(wp.sqrt(a2))
 
 
-def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, vertex_normals: bool) -> wp.Function:
-  """Build the surface evaluation func specialised on geom types and material features."""
+def make_eval_surface(geom_types: Tuple[int, ...]) -> Callable:
+  """Build the surface evaluation func specialised on the geom types present.
+
+  Material features (texture roles, specular anti-aliasing, vertex normals) are read from
+  `Settings`.
+  """
   primitive_uv = texture.make_primitive_uv(geom_types)
   has_mesh = int(GeomType.MESH) in geom_types or int(GeomType.SDF) in geom_types
   has_primitive = any(t not in (int(GeomType.MESH), int(GeomType.SDF), int(GeomType.FLEX)) for t in geom_types)
-  specular_aa = features.specular_aa
 
   @wp.func
   def eval_surface(
     geo: Geometry,
     mats: Materials,
+    s: Settings,
     worldid: int,
     hit: Hit,
     point: wp.vec3,
@@ -323,8 +348,8 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
     mesh_id = hit.mesh_id
     face_id = hit.face_id
 
-    if wp.static(has_mesh and vertex_normals):
-      if is_mesh and mesh_id >= 0 and face_id >= 0:
+    if wp.static(has_mesh):
+      if s.vertex_normals and is_mesh and mesh_id >= 0 and face_id >= 0:
         face_adr = mats.mesh_faceadr[mesh_id] + face_id
         tri = mats.mesh_facenormal[face_adr]
         nadr = mats.mesh_normaladr[mesh_id]
@@ -334,7 +359,7 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
         shading = wp.normalize(n0 * hit.bary_u + n1 * hit.bary_v + n2 * (1.0 - hit.bary_u - hit.bary_v))
         if wp.dot(shading, local_dir) > 0.0:
           shading = -shading
-        if wp.static(specular_aa):
+        if s.specular_aa:
           f = mats.mesh_face[face_adr]
           vadr = mats.mesh_vertadr[mesh_id]
           p0 = mats.mesh_vert[vadr + f[0]]
@@ -342,17 +367,18 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
           spread = wp.max(wp.length(n0 - n1), wp.max(wp.length(n1 - n2), wp.length(n2 - n0)))
           curvature = spread / wp.max(edge, 1.0e-9)
 
-    if wp.static(specular_aa and has_primitive):
-      size = geo.geom_size[worldid % geo.geom_size.shape[0], geom_id]
-      if gtype == int(GeomType.SPHERE.value) or gtype == int(GeomType.CAPSULE.value) or gtype == int(GeomType.CYLINDER.value):
-        curvature = 1.0 / wp.max(size[0], 1.0e-9)
-      elif gtype == int(GeomType.ELLIPSOID.value):
-        curvature = 1.0 / wp.max(wp.min(size[0], wp.min(size[1], size[2])), 1.0e-9)
+    if wp.static(has_primitive):
+      if s.specular_aa:
+        size = geo.geom_size[worldid % geo.geom_size.shape[0], geom_id]
+        if gtype == int(GeomType.SPHERE.value) or gtype == int(GeomType.CAPSULE.value) or gtype == int(GeomType.CYLINDER.value):
+          curvature = 1.0 / wp.max(size[0], 1.0e-9)
+        elif gtype == int(GeomType.ELLIPSOID.value):
+          curvature = 1.0 / wp.max(wp.min(size[0], wp.min(size[1], size[2])), 1.0e-9)
 
     # Ray-cone width projected on the surface.
     cone = footprint / wp.max(wp.abs(wp.dot(local_normal, local_dir)), 0.05)
 
-    if wp.static(features.textures):
+    if s.textures:
       if mat_id >= 0:
         mat_world = worldid % mats.mat_texid.shape[0]
         repeat = mats.mat_texrepeat[worldid % mats.mat_texrepeat.shape[0], mat_id]
@@ -398,7 +424,7 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
             has_uv = True
 
         if has_uv:
-          if wp.static(features.base_color_map):
+          if s.base_color_map:
             tex_id = mats.mat_texid[mat_world, mat_id, _ROLE_RGB]
             if tex_id < 0:
               tex_id = mats.mat_texid[mat_world, mat_id, _ROLE_RGBA]
@@ -407,7 +433,7 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
               surface.base_color = wp.cw_mul(surface.base_color, wp.vec3(texel[0], texel[1], texel[2]))
               surface.alpha = surface.alpha * texel[3]
 
-          if wp.static(features.orm_map):
+          if s.orm_map:
             tex_id = mats.mat_texid[mat_world, mat_id, _ROLE_ORM]
             if tex_id >= 0:
               texel = _fetch(mats, tex_id, uv, cone, uv_per_length)
@@ -425,24 +451,24 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
               if tex_id >= 0:
                 surface.metallic = surface.metallic * _fetch(mats, tex_id, uv, cone, uv_per_length)[0]
 
-          if wp.static(features.opacity_map):
+          if s.opacity_map:
             tex_id = mats.mat_texid[mat_world, mat_id, _ROLE_OPACITY]
             if tex_id >= 0:
               surface.alpha = surface.alpha * _fetch(mats, tex_id, uv, cone, uv_per_length)[0]
 
-          if wp.static(features.emissive_map):
+          if s.emissive_map:
             tex_id = mats.mat_texid[mat_world, mat_id, _ROLE_EMISSIVE]
             if tex_id >= 0:
               texel = _fetch(mats, tex_id, uv, cone, uv_per_length)
               surface.emissive = wp.vec3(texel[0], texel[1], texel[2]) * emission
               emission = 0.0
 
-          if wp.static(features.normal_map):
+          if s.normal_map:
             tex_id = mats.mat_texid[mat_world, mat_id, _ROLE_NORMAL]
             if tex_id >= 0:
               texel = _fetch(mats, tex_id, uv, cone, uv_per_length)
               nts = wp.vec3(texel[0], texel[1], texel[2]) * 2.0 - wp.vec3(1.0)
-              if wp.static(specular_aa):
+              if s.specular_aa:
                 # Mip filtering shortens averaged normals; Toksvig turns that into roughness.
                 length = wp.clamp(wp.length(nts), 1.0e-3, 1.0)
                 surface.perceptual_roughness = _widen_roughness(surface.perceptual_roughness, (1.0 - length) / length)
@@ -462,7 +488,7 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
     if mat_id >= 0 and emission > 0.0:
       surface.emissive = surface.base_color * emission
 
-    if wp.static(specular_aa):
+    if s.specular_aa:
       # Filament: α² += min(2 σ², threshold) with σ² from the normal change across the footprint.
       dn = cone * curvature
       kernel = wp.min(2.0 * wp.static(_SPECULAR_AA_VARIANCE) * dn * dn, wp.static(_SPECULAR_AA_THRESHOLD))
@@ -471,3 +497,50 @@ def make_eval_surface(geom_types: Tuple[int, ...], features: SurfaceFeatures, ve
     return surface, wp.normalize(gmat @ shading)
 
   return eval_surface
+
+
+@wp.struct
+class Lobes:
+  """BRDF inputs of a surface seen at NoV (Filament's split-sum terms).
+
+  Attributes:
+    perceptual_roughness: clamped perceptual roughness.
+    alpha: GGX roughness (perceptual_roughness²).
+    f0: specular reflectance at normal incidence.
+    energy_comp: multiscatter energy compensation of the specular lobe.
+    spec_albedo: directional albedo of the specular lobe.
+    diffuse_color: Lambertian albedo weighted by (1 - metallic)(1 - spec_albedo).
+  """
+
+  perceptual_roughness: float
+  alpha: float
+  f0: wp.vec3
+  energy_comp: wp.vec3
+  spec_albedo: wp.vec3
+  diffuse_color: wp.vec3
+
+
+@wp.func
+def shading_lobes(dfg_lut: wp.Texture2D, surface: Surface, nov: float) -> Lobes:
+  lobes = Lobes()
+  pr, alpha = brdf.roughness_to_alpha(surface.perceptual_roughness)
+  lobes.perceptual_roughness = pr
+  lobes.alpha = alpha
+  lobes.f0 = brdf.surface_f0(surface.base_color, surface.metallic, surface.reflectance)
+  dfg = ibl.sample_dfg(dfg_lut, nov, pr)
+  lobes.energy_comp = brdf.energy_compensation(lobes.f0, dfg)
+  lobes.spec_albedo = brdf.specular_albedo(lobes.f0, dfg)
+  # Energy-conserving coupling: the diffuse lobe gets what the specular lobe does not reflect.
+  lobes.diffuse_color = brdf.coupled_diffuse(surface.base_color, surface.metallic, lobes.spec_albedo)
+  return lobes
+
+
+@wp.func
+def mirror_reflectance(geo: Geometry, mats: Materials, worldid: int, geom_id: int) -> float:
+  """MuJoCo reflectance of a hit geom's material (0 without material, e.g. flex)."""
+  if geom_id < 0:
+    return 0.0
+  mat_id = geo.geom_matid[worldid % geo.geom_matid.shape[0], geom_id]
+  if mat_id < 0:
+    return 0.0
+  return mats.mat_reflectance[worldid % mats.mat_reflectance.shape[0], mat_id]

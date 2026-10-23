@@ -27,6 +27,7 @@ For each map we keep
     lobe and 1/π (Ramamoorthi & Hanrahan 2001), so they evaluate to Lambertian radiance.
 """
 
+import dataclasses
 import math
 import re
 from pathlib import Path
@@ -40,6 +41,8 @@ from mujoco_warp._src.render_util import create_warp_texture
 
 from mujoco_warp_pbr._src import brdf
 from mujoco_warp_pbr._src import ibl
+from mujoco_warp_pbr._src.color import LUMINANCE_WEIGHTS
+from mujoco_warp_pbr._src.color import srgb_eotf
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -53,39 +56,69 @@ MAX_RADIANCE_WIDTH = 2048
 CDF_WIDTH = 256
 
 
+def _decode_rle_scanline(data: bytes, pos: int, width: int, path: str, y: int) -> tuple[np.ndarray, int]:
+  """Decodes the adaptive run-length encoded RGBE scanline at `pos`: (rgbe (width, 4), end)."""
+  line = bytearray(4 * width)
+  n = len(data)
+  for c in range(4):
+    x = c * width
+    end = x + width
+    while x < end:
+      if pos >= n:
+        raise ValueError(f"{path}: truncated run-length data in scanline {y}")
+      count = data[pos]
+      pos += 1
+      if count > 128:
+        # A run: one byte repeated count - 128 times.
+        count -= 128
+        if count > end - x or pos >= n:
+          raise ValueError(f"{path}: bad run-length data in scanline {y}")
+        line[x : x + count] = bytes((data[pos],)) * count
+        pos += 1
+      else:
+        # A literal sequence of count bytes.
+        if count == 0 or count > end - x or pos + count > n:
+          raise ValueError(f"{path}: bad run-length data in scanline {y}")
+        line[x : x + count] = data[pos : pos + count]
+        pos += count
+      x += count
+  return np.frombuffer(bytes(line), dtype=np.uint8).reshape(4, width).T, pos
+
+
 def load_hdr(path: str | Path) -> np.ndarray:
-  """Reads a Radiance RGBE (.hdr) file as float32 (height, width, 3) linear radiance."""
+  """Reads a Radiance RGBE (.hdr) file as float32 (height, width, 3) linear radiance.
+
+  Raises:
+    ValueError: if the file is not a '-Y H +X W' oriented RGBE file or its pixel data is
+      truncated or malformed.
+  """
   data = Path(path).read_bytes()
-  header_end = data.index(b"\n\n") + 2
-  resolution_end = data.index(b"\n", header_end)
+  if not data.startswith(b"#?"):
+    raise ValueError(f"{path}: not a Radiance .hdr file (missing '#?' signature)")
+  try:
+    header_end = data.index(b"\n\n") + 2
+    resolution_end = data.index(b"\n", header_end)
+  except ValueError:
+    raise ValueError(f"{path}: truncated .hdr header") from None
   match = re.match(rb"-Y (\d+) \+X (\d+)", data[header_end:resolution_end])
   if match is None:
     raise ValueError(f"{path}: only '-Y H +X W' oriented .hdr files are supported")
   height, width = int(match.group(1)), int(match.group(2))
-  buf = np.frombuffer(data, dtype=np.uint8, offset=resolution_end + 1)
+  pos = resolution_end + 1
 
   rgbe = np.empty((height, width, 4), dtype=np.uint8)
-  pos = 0
   for y in range(height):
-    if width < 8 or width > 0x7FFF or buf[pos] != 2 or buf[pos + 1] != 2 or buf[pos + 2] & 0x80:
+    rle = 8 <= width <= 0x7FFF and data[pos : pos + 2] == b"\x02\x02" and pos + 2 < len(data) and not data[pos + 2] & 0x80
+    if not rle:
       # Flat (non run-length encoded) scanline.
-      rgbe[y] = buf[pos : pos + 4 * width].reshape(width, 4)
+      if pos + 4 * width > len(data):
+        raise ValueError(f"{path}: truncated pixel data in scanline {y}")
+      rgbe[y] = np.frombuffer(data, dtype=np.uint8, count=4 * width, offset=pos).reshape(width, 4)
       pos += 4 * width
       continue
-    pos += 4
-    for c in range(4):
-      x = 0
-      while x < width:
-        count = int(buf[pos])
-        pos += 1
-        if count > 128:
-          count -= 128
-          rgbe[y, x : x + count, c] = buf[pos]
-          pos += 1
-        else:
-          rgbe[y, x : x + count, c] = buf[pos : pos + count]
-          pos += count
-        x += count
+    if (data[pos + 2] << 8 | data[pos + 3]) != width:
+      raise ValueError(f"{path}: scanline {y} width does not match the header")
+    rgbe[y], pos = _decode_rle_scanline(data, pos + 4, width, str(path), y)
   exponent = rgbe[..., 3].astype(np.int32)
   scale = np.where(exponent > 0, np.ldexp(1.0, exponent - 136), 0.0).astype(np.float32)
   return rgbe[..., :3].astype(np.float32) * scale[..., None]
@@ -261,12 +294,7 @@ def _skybox_to_equirect(
   c = sample_skybox(skybox, face_width_inv, d)
   for i in range(3):
     # MuJoCo skybox texels are display (sRGB) colours.
-    v = c[i]
-    if v <= 0.04045:
-      v = v / 12.92
-    else:
-      v = wp.pow((v + 0.055) / 1.055, 2.4)
-    image_out[y, x, i] = v
+    image_out[y, x, i] = srgb_eotf(c[i])
 
 
 def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> np.ndarray | None:
@@ -300,7 +328,7 @@ class EnvironmentMap:
     stack = wp.zeros((PREFILTER_LEVELS, pw // 2, pw, 4), dtype=wp.float16)
     wp.launch(_prefilter, dim=(PREFILTER_LEVELS, pw // 2, pw), inputs=[self.radiance, w, h, PREFILTER_SAMPLES], outputs=[stack])
     self.prefiltered = wp.Texture3D(
-      stack.numpy(),
+      stack,
       filter_mode=wp.TextureFilterMode.LINEAR,
       address_mode_u=wp.TextureAddressMode.WRAP,
       address_mode_v=wp.TextureAddressMode.CLAMP,
@@ -318,7 +346,7 @@ def sampling_distribution(image: np.ndarray, width: int = CDF_WIDTH) -> Tuple[np
   """
   small = _downsample(np.asarray(image, dtype=np.float64)[..., :3], width)
   h, w, _ = small.shape
-  luminance = small @ np.array([0.2126, 0.7152, 0.0722])
+  luminance = small @ np.array(LUMINANCE_WEIGHTS)
   sin_theta = np.sin((np.arange(h) + 0.5) / h * np.pi)[:, None]
   # A small floor keeps every direction reachable (unbiased MIS with BSDF sampling).
   weight = luminance * sin_theta + 1e-6 * max(float(luminance.mean()), 1e-12)
@@ -391,22 +419,76 @@ def direction_pdf(prob: wp.array3d[float], env: int, yaw: float, direction: wp.v
   return prob[env, r, c] * float(w * h) / (wp.static(2.0 * wp.pi * wp.pi) * sin_theta)
 
 
-def build_environments(images: list[np.ndarray]) -> dict:
+@dataclasses.dataclass
+class Environments:
+  """Device resources of the environment maps of a context (see PbrRenderContext's env_*).
+
+  Attributes:
+    maps: the objects owning the textures (kept alive with the context).
+    radiance: radiance texture per map                                  (nenv,)
+    prefiltered: GGX-prefiltered stack per map                          (nenv,)
+    sh: SH9 Lambertian radiance coefficients                            (nenv, 9)
+    width: width of the largest radiance texture
+    prob: importance-sampling cell probabilities                        (nenv, h, w)
+    marginal: row CDF of prob                                           (nenv, h + 1)
+    conditional: per-row column CDFs of prob                            (nenv, h, w + 1)
+  """
+
+  maps: list
+  radiance: wp.array
+  prefiltered: wp.array
+  sh: wp.array
+  width: float
+  prob: wp.array
+  marginal: wp.array
+  conditional: wp.array
+
+
+def build_environments(images: list[np.ndarray]) -> Environments:
   """GPU resources for a list of environment maps (sampling tables share one resolution)."""
   maps = [EnvironmentMap(im) for im in images]
-  tables = [sampling_distribution(im) for im in images]
-  shape = tables[0][0].shape
-  tables = [t if t[0].shape == shape else sampling_distribution(_resize_nearest(im, shape)) for t, im in zip(tables, images)]
-  return {
-    "maps": maps,
-    "radiance": wp.array([e.radiance for e in maps], dtype=wp.Texture2D),
-    "prefiltered": wp.array([e.prefiltered for e in maps], dtype=wp.Texture3D),
-    "sh": wp.array(np.stack([e.sh for e in maps]), dtype=wp.vec3),
-    "width": float(max(e.width for e in maps)),
-    "prob": wp.array(np.stack([t[0] for t in tables]), dtype=float),
-    "marginal": wp.array(np.stack([t[1] for t in tables]), dtype=float),
-    "conditional": wp.array(np.stack([t[2] for t in tables]), dtype=float),
-  }
+  shape = None
+  tables = []
+  for im in images:
+    if shape is not None and _downsampled_shape(im.shape, CDF_WIDTH) != shape:
+      im = _resize_nearest(im, shape)
+    table = sampling_distribution(im)
+    shape = shape or table[0].shape
+    tables.append(table)
+  return Environments(
+    maps=maps,
+    radiance=wp.array([e.radiance for e in maps], dtype=wp.Texture2D),
+    prefiltered=wp.array([e.prefiltered for e in maps], dtype=wp.Texture3D),
+    sh=wp.array(np.stack([e.sh for e in maps]), dtype=wp.vec3),
+    width=float(max(e.width for e in maps)),
+    prob=wp.array(np.stack([t[0] for t in tables]), dtype=float),
+    marginal=wp.array(np.stack([t[1] for t in tables]), dtype=float),
+    conditional=wp.array(np.stack([t[2] for t in tables]), dtype=float),
+  )
+
+
+def empty_environments() -> Environments:
+  """Placeholder resources of a context without environment map (constant ambient)."""
+  radiance = wp.Texture2D(np.zeros((1, 1, 4), np.float16))
+  prefiltered = wp.Texture3D(np.zeros((1, 1, 1, 4), np.float16))
+  return Environments(
+    maps=[radiance, prefiltered],
+    radiance=wp.array([radiance], dtype=wp.Texture2D),
+    prefiltered=wp.array([prefiltered], dtype=wp.Texture3D),
+    sh=wp.zeros((1, 9), dtype=wp.vec3),
+    width=1.0,
+    prob=wp.ones((1, 1, 1), dtype=float),
+    marginal=wp.array([[0.0, 1.0]], dtype=float),
+    conditional=wp.array([[[0.0, 1.0]]], dtype=float),
+  )
+
+
+def _downsampled_shape(shape: Tuple[int, ...], max_width: int) -> Tuple[int, int]:
+  """(height, width) of `_downsample` applied to an image of this shape."""
+  h, w = shape[0], shape[1]
+  while w > max_width:
+    h, w = h // 2, w // 2
+  return h, w
 
 
 def _resize_nearest(image: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:

@@ -15,10 +15,13 @@
 
 import dataclasses
 import enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import warp as wp
 from mujoco_warp import RenderContext
+
+if TYPE_CHECKING:
+  from mujoco_warp_pbr._src.material import SurfaceFeatures
 
 
 class LightModel(enum.IntEnum):
@@ -93,6 +96,37 @@ class UnsetMaterial(enum.IntEnum):
   HEURISTIC = 1
 
 
+# Settings compiled into the kernels by default (bake groups of `kernel_inputs.BAKE_GROUPS`).
+DEFAULT_BAKED = frozenset(
+  {
+    "render_order",
+    "total_rays",
+    "samples_per_axis",
+    "clip",
+    "tone_mapper",
+    "render_hdr",
+    "any_rgb",
+    "light_model",
+    "has_spot",
+    "use_shadows",
+    "shadow_samples",
+    "shadow_light_fraction",
+    "headlight_active",
+    "headlight",
+    "has_env",
+    "env_background",
+    "inv_texel_angle",
+    "textures",
+    "specular_aa",
+    "vertex_normals",
+    "has_reflection",
+    "transparency",
+    "denoise",
+    "nlight",
+  }
+)
+
+
 @dataclasses.dataclass
 class PbrRenderContext:
   """Context for physically based rendering.
@@ -118,7 +152,8 @@ class PbrRenderContext:
     light_intensity: resolved physical intensity (lux or candela)      (*, nlight)
     light_range: physical falloff radius                               (*, nlight)
     light_bulbradius: radius of the light bulb for soft shadows        (*, nlight)
-    headlight_intensity: resolved headlight illuminance (physical model)
+    headlight_intensity: headlight illuminance times exposure (physical light model; the kernels
+      divide it by each world's exposure, so the headlight stays display-relative)
     exposure: linear exposure multiplier                               (*,)
     ambient_radiance: constant environment radiance                    (*,)
     dfg_lut: split-sum DFG lookup table indexed by (NoV, perceptual roughness)
@@ -142,16 +177,17 @@ class PbrRenderContext:
     features: SurfaceFeatures the kernel is specialised on
     samples_per_pixel: sub-pixel samples per axis (N×N per pixel)
     shadow_samples: shadow rays per light (> 1 gives soft shadows from bulbradius)
-    has_transparency: whether any rendered material is translucent
+    has_transparency: whether translucent surfaces are composited. Derived at creation from the
+      rendered geoms' rgba, materials and textures: set it to True after making geoms translucent
+      (e.g. replacing m.geom_rgba with alpha < 1), otherwise alpha is ignored
     max_layers: translucent layers composited per ray
-    has_reflection: whether any material has MuJoCo reflectance > 0
-    unroll_lights: unroll the per-light loop at compile time (else a runtime loop)
+    has_reflection: whether MuJoCo reflectance is rendered. Derived at creation from the rendered
+      materials' reflectance (and enable_reflections): set it to True after making materials
+      reflective (e.g. replacing mat_reflectance), otherwise reflectance is ignored
     render_order: RenderOrder thread-to-pixel assignment
     block_dim: threads per block of the render kernels (None: MuJoCo Warp's render block size)
     max_registers: register cap per thread for the render kernels (0: compiler default)
     ordered_traversal: nearest-first scene BVH traversal (traverse.py) instead of MuJoCo Warp's
-    max_unroll: Warp's max_unroll for the megakernel (constant-bound loops up to this length
-      are unrolled)
     tier: Tier
     path_samples: path-traced samples per pixel
     max_depth: maximum path length (bounces)
@@ -189,9 +225,13 @@ class PbrRenderContext:
       re-framed copies where mesh_bvh_frame is not the identity; None with OptiX) (nmesh,)
     trace_mesh_registry: the re-framed wp.Mesh objects (keeps them alive)
     geom_xmat_trace: geom frames of ray queries, refreshed every render  (nworld, ngeom)
+    baked: bake groups compiled into the kernels as constants (`kernel_inputs.BAKE_GROUPS`; the
+      other settings are read at runtime). Changing a baked value recompiles the kernel on the
+      next render
     _megakernel: cached specialised render kernel
+    _megakernel_key: what `_megakernel` is specialised on (`kernel_inputs.kernel_key`)
     _optix: cached OptiX acceleration structures and pipeline (traversal="optix")
-    _denoise_finish: cached remodulation / display kernel
+    _host_cache: host-side values derived from device arrays, keyed by array identity
   """
 
   base: RenderContext
@@ -199,72 +239,72 @@ class PbrRenderContext:
   tone_mapper: int
   use_shadows: bool
   shadow_light_fraction: float
-  geom_metallic: wp.array2d[float]
-  geom_roughness: wp.array2d[float]
-  geom_reflectance: wp.array2d[float]
-  mat_reflectance: wp.array2d[float]
-  light_intensity: wp.array2d[float]
-  light_range: wp.array2d[float]
-  light_bulbradius: wp.array2d[float]
+  geom_metallic: wp.array
+  geom_roughness: wp.array
+  geom_reflectance: wp.array
+  mat_reflectance: wp.array
+  light_intensity: wp.array
+  light_range: wp.array
+  light_bulbradius: wp.array
   headlight_intensity: float
-  exposure: wp.array[float]
-  ambient_radiance: wp.array[wp.vec3]
+  exposure: wp.array
+  ambient_radiance: wp.array
   dfg_lut: wp.Texture2D
   background_linear: wp.vec3
   has_env: bool
   env_background: bool
   env_maps: list
-  env_radiance: wp.array[wp.Texture2D]
-  env_prefiltered: wp.array[wp.Texture3D]
-  env_sh: wp.array2d[wp.vec3]
+  env_radiance: wp.array
+  env_prefiltered: wp.array
+  env_sh: wp.array
   env_texel_angle: float
-  env_id: wp.array[int]
-  env_intensity: wp.array[float]
-  env_yaw: wp.array[float]
-  env_prob: wp.array3d[float]
-  env_marginal: wp.array2d[float]
-  env_conditional: wp.array3d[float]
-  textures: wp.array[wp.Texture2D]
+  env_id: wp.array
+  env_intensity: wp.array
+  env_yaw: wp.array
+  env_prob: wp.array
+  env_marginal: wp.array
+  env_conditional: wp.array
+  textures: wp.array
   textures_registry: list
-  tex_size: wp.array[wp.vec2]
-  features: Any
+  tex_size: wp.array
+  features: "SurfaceFeatures"
   samples_per_pixel: int
   shadow_samples: int
   has_transparency: bool
   max_layers: int
   has_reflection: bool
-  unroll_lights: bool
   render_order: int
-  block_dim: Any
-  max_registers: Any
+  block_dim: Optional[int]
+  max_registers: int
   ordered_traversal: bool
-  max_unroll: int
   tier: int
   path_samples: int
   max_depth: int
   rr_depth: int
   denoise: bool
   denoise_iterations: int
-  denoise_sigma_color: float
-  denoise_sigma_normal: float
-  denoise_sigma_depth: float
-  denoise_sigma_albedo: float
-  aov_albedo: wp.array2d[wp.vec3h]
-  aov_normal: wp.array2d[wp.vec3h]
-  aov_depth: wp.array2d[float]
-  aov_emission: wp.array2d[wp.vec3]
-  aov_variance: wp.array2d[float]
-  denoise_buffers: tuple
+  aov_albedo: wp.array
+  aov_normal: wp.array
+  aov_depth: wp.array
+  aov_emission: wp.array
+  aov_variance: wp.array
+  denoise_buffers: tuple[wp.array, wp.array]
   render_hdr: bool
-  hdr_data: wp.array2d[wp.vec3]
+  hdr_data: wp.array
   traversal: str = "software"
+  denoise_sigma_color: float = 4.0
+  denoise_sigma_normal: float = 128.0
+  denoise_sigma_depth: float = 0.02
+  denoise_sigma_albedo: float = 0.05
   optix_rebuild_every: int = 0
   optix_max_registers: Optional[int] = None
   optix_graph_capture: bool = False
-  mesh_bvh_frame: Any = None
-  trace_mesh_bvh_id: Any = None
-  trace_mesh_registry: Any = None
-  geom_xmat_trace: Any = None
-  _megakernel: Any = None
+  mesh_bvh_frame: Optional[wp.array] = None
+  trace_mesh_bvh_id: Optional[wp.array] = None
+  trace_mesh_registry: Optional[list] = None
+  geom_xmat_trace: Optional[wp.array] = None
+  baked: frozenset[str] = DEFAULT_BAKED
+  _megakernel: Optional[wp.Kernel] = None
+  _megakernel_key: Optional[tuple] = None
   _optix: Any = None
-  _denoise_finish: Any = None
+  _host_cache: dict[str, Any] = dataclasses.field(default_factory=dict)

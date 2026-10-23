@@ -28,10 +28,10 @@ Each world and camera image is filtered independently.
 """
 
 import warp as wp
-from mujoco_warp._src.render_util import pack_rgba_to_uint32
 
-from mujoco_warp_pbr._src.color import make_display_transform
-from mujoco_warp_pbr._src.color import srgb_oetf
+from mujoco_warp_pbr._src.color import display_transform
+from mujoco_warp_pbr._src.color import encode_display
+from mujoco_warp_pbr._src.color import luminance
 from mujoco_warp_pbr._src.types import PbrRenderContext
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
@@ -62,7 +62,11 @@ class Image:
 
 @wp.func
 def _locate(img: Image, index: int) -> wp.vec4i:
-  """(first pixel address, width, height, pixel id) of the camera image holding `index`."""
+  """(first pixel address, width, height, pixel id) of the camera image holding `index`.
+
+  `index` addresses the RGB buffer (cameras without RGB have no pixels there), unlike the ray
+  ids of `camera.setup_pixel`, which run over every rendering camera.
+  """
   for i in range(img.nrender):
     adr = img.rgb_adr[i]
     res = img.cam_res[i]
@@ -82,11 +86,6 @@ def _b3(i: int) -> float:
 
 
 @wp.func
-def _luminance(c: wp.vec3) -> float:
-  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
-
-
-@wp.func
 def _demodulated(c: wp.vec3, albedo: wp.vec3) -> wp.vec3:
   return wp.vec3(
     c[0] / wp.max(albedo[0], _MIN_ALBEDO), c[1] / wp.max(albedo[1], _MIN_ALBEDO), c[2] / wp.max(albedo[2], _MIN_ALBEDO)
@@ -99,7 +98,7 @@ def _demodulate(hdr: wp.array2d[wp.vec3], exposure: wp.array[float], feat: Featu
   albedo = wp.vec3(feat.albedo[worldid, index])
   c = hdr[worldid, index] * exposure[worldid % exposure.shape[0]] - feat.emission[worldid, index]
   c = _demodulated(wp.vec3(wp.max(c[0], 0.0), wp.max(c[1], 0.0), wp.max(c[2], 0.0)), albedo)
-  scale = 1.0 / wp.max(_luminance(albedo), _MIN_ALBEDO)
+  scale = 1.0 / wp.max(luminance(albedo), _MIN_ALBEDO)
   out[worldid, index] = wp.vec4(c[0], c[1], c[2], feat.variance[worldid, index] * scale * scale)
 
 
@@ -142,7 +141,7 @@ def _atrous(
   inv_sigma_l = 1.0 / (sigma_color * wp.sqrt(wp.max(variance / variance_weight, 0.0)) + 1.0e-6)
 
   s0 = src[worldid, index]
-  l0 = _luminance(wp.vec3(s0[0], s0[1], s0[2]))
+  l0 = luminance(wp.vec3(s0[0], s0[1], s0[2]))
   z0 = feat.depth[worldid, index]
   a0 = wp.vec3(feat.albedo[worldid, index])
   inv_sigma_a = 1.0 / sigma_albedo
@@ -167,7 +166,7 @@ def _atrous(
       wn = wp.pow(wp.max(wp.dot(n0, wp.vec3(feat.normal[worldid, q])), 0.0), sigma_normal)
       distance = (
         wp.abs(feat.depth[worldid, q] - z0) * inv_sigma_z
-        + wp.abs(_luminance(c) - l0) * inv_sigma_l
+        + wp.abs(luminance(c) - l0) * inv_sigma_l
         + wp.length(wp.vec3(feat.albedo[worldid, q]) - a0) * inv_sigma_a
       )
       weight = _b3(i) * _b3(j) * wn * wp.exp(-distance)
@@ -179,32 +178,27 @@ def _atrous(
   dst[worldid, index] = wp.vec4(c[0], c[1], c[2], total_variance / (weight_sum * weight_sum))
 
 
-def _make_finish(tone_mapper: int, render_hdr: bool) -> wp.Kernel:
-  display_transform = make_display_transform(tone_mapper)
-
-  @wp.kernel(module="unique")
-  def finish(
-    src: wp.array2d[wp.vec4],
-    feat: Features,
-    exposure: wp.array[float],
-    rgb: wp.array2d[wp.uint32],
-    hdr: wp.array2d[wp.vec3],
-  ):
-    worldid, index = wp.tid()
-    albedo = wp.vec3(feat.albedo[worldid, index])
-    s = src[worldid, index]
-    c = wp.vec3(s[0], s[1], s[2])
-    exposed = feat.emission[worldid, index] + wp.vec3(
-      c[0] * wp.max(albedo[0], _MIN_ALBEDO), c[1] * wp.max(albedo[1], _MIN_ALBEDO), c[2] * wp.max(albedo[2], _MIN_ALBEDO)
-    )
-    if wp.static(render_hdr):
-      hdr[worldid, index] = exposed / exposure[worldid % exposure.shape[0]]
-    d = display_transform(exposed)
-    rgb[worldid, index] = pack_rgba_to_uint32(
-      srgb_oetf(d[0]) * 255.0 + 0.5, srgb_oetf(d[1]) * 255.0 + 0.5, srgb_oetf(d[2]) * 255.0 + 0.5, 255.0
-    )
-
-  return finish
+@wp.kernel(module="unique")
+def _finish(
+  src: wp.array2d[wp.vec4],
+  feat: Features,
+  exposure: wp.array[float],
+  tone_mapper: int,
+  render_hdr: bool,
+  rgb: wp.array2d[wp.uint32],
+  hdr: wp.array2d[wp.vec3],
+):
+  """Remodulates the filtered image, tone maps and encodes it (and writes the HDR if asked)."""
+  worldid, index = wp.tid()
+  albedo = wp.vec3(feat.albedo[worldid, index])
+  s = src[worldid, index]
+  c = wp.vec3(s[0], s[1], s[2])
+  exposed = feat.emission[worldid, index] + wp.vec3(
+    c[0] * wp.max(albedo[0], _MIN_ALBEDO), c[1] * wp.max(albedo[1], _MIN_ALBEDO), c[2] * wp.max(albedo[2], _MIN_ALBEDO)
+  )
+  if render_hdr:
+    hdr[worldid, index] = exposed / exposure[worldid % exposure.shape[0]]
+  rgb[worldid, index] = encode_display(display_transform(exposed, tone_mapper))
 
 
 def features(rc: PbrRenderContext) -> Features:
@@ -217,7 +211,7 @@ def features(rc: PbrRenderContext) -> Features:
   return feat
 
 
-def denoise(rc: PbrRenderContext, nworld: int):
+def denoise(rc: PbrRenderContext, nworld: int) -> None:
   """Filters the noisy path-traced HDR in `rc.hdr_data` into the RGB (and HDR) outputs."""
   base = rc.base
   img = Image()
@@ -246,6 +240,9 @@ def denoise(rc: PbrRenderContext, nworld: int):
       outputs=[dst],
     )
     src, dst = dst, src
-  if rc._denoise_finish is None:
-    rc._denoise_finish = _make_finish(rc.tone_mapper, rc.render_hdr)
-  wp.launch(rc._denoise_finish, dim=dim, inputs=[src, feat, rc.exposure], outputs=[base.rgb_data, rc.hdr_data])
+  wp.launch(
+    _finish,
+    dim=dim,
+    inputs=[src, feat, rc.exposure, int(rc.tone_mapper), bool(rc.render_hdr)],
+    outputs=[base.rgb_data, rc.hdr_data],
+  )

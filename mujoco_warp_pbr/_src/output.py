@@ -16,6 +16,7 @@
 """Per-camera views of the render outputs."""
 
 import mujoco_warp as mjw
+import numpy as np
 import warp as wp
 
 from mujoco_warp_pbr._src.types import PbrRenderContext
@@ -23,17 +24,17 @@ from mujoco_warp_pbr._src.types import PbrRenderContext
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-def get_rgb(rc: PbrRenderContext, camera_index: int, rgb_out: wp.array3d[wp.vec3]):
+def get_rgb(rc: PbrRenderContext, camera_index: int, rgb_out: wp.array) -> None:
   """Writes display RGB in [0, 1] for one camera into rgb_out (nworld, height, width)."""
   mjw.get_rgb(rc.base, camera_index, rgb_out)
 
 
-def get_depth(rc: PbrRenderContext, camera_index: int, depth_scale: float, depth_out: wp.array3d[float]):
+def get_depth(rc: PbrRenderContext, camera_index: int, depth_scale: float, depth_out: wp.array) -> None:
   """Writes planar depth / depth_scale clamped to [0, 1] for one camera."""
   mjw.get_depth(rc.base, camera_index, depth_scale, depth_out)
 
 
-def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array3d[wp.vec2i]):
+def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array) -> None:
   """Writes per-pixel (object id, object type) for one camera; background is (-1, -1)."""
   mjw.get_segmentation(rc.base, camera_index, seg_out)
 
@@ -53,13 +54,37 @@ def _extract_hdr(
   hdr_out[worldid, yid, xid] = hdr_data[worldid, rgb_adr[camera_index] + pixelid]
 
 
-def get_hdr(rc: PbrRenderContext, camera_index: int, hdr_out: wp.array3d[wp.vec3]):
-  """Writes linear HDR radiance (before exposure) for one camera; needs render_hdr=True."""
+def _camera_res(rc: PbrRenderContext) -> np.ndarray:
+  """(nrender, 2) camera resolutions on host (cached per `base.cam_res` array)."""
+  cam_res = rc.base.cam_res
+  cached = rc._host_cache.get("cam_res")
+  if cached is None or cached[0] is not cam_res:
+    cached = (cam_res, cam_res.numpy())
+    rc._host_cache["cam_res"] = cached
+  return cached[1]
+
+
+def get_hdr(rc: PbrRenderContext, camera_index: int, hdr_out: wp.array) -> None:
+  """Writes linear HDR radiance (before exposure) for one camera into hdr_out (nworld, h, w).
+
+  Needs render_hdr=True.
+
+  Raises:
+    ValueError: without render_hdr, for a camera index out of range or an output whose shape
+      does not match the camera image.
+  """
   if not rc.render_hdr:
     raise ValueError("create the render context with render_hdr=True to read HDR output")
+  res = _camera_res(rc)
+  if not 0 <= camera_index < len(res):
+    raise ValueError(f"camera_index must be in [0, {len(res)}), got {camera_index}")
+  nworld = rc.hdr_data.shape[0]
+  width, height = (int(v) for v in res[camera_index])
+  if hdr_out.ndim != 3 or hdr_out.shape[0] > nworld or tuple(hdr_out.shape[1:]) != (height, width):
+    raise ValueError(f"hdr_out must have shape (<= {nworld}, {height}, {width}), got {tuple(hdr_out.shape)}")
   wp.launch(
     _extract_hdr,
-    dim=(hdr_out.shape[0], hdr_out.shape[1] * hdr_out.shape[2]),
+    dim=(hdr_out.shape[0], height * width),
     inputs=[rc.hdr_data, rc.base.rgb_adr, camera_index],
     outputs=[hdr_out],
   )

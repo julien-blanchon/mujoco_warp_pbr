@@ -16,12 +16,19 @@
 """Exposure, tone mapping and sRGB transfer functions."""
 
 import math
+from typing import Callable
 
+import numpy as np
 import warp as wp
+from mujoco_warp._src.render_util import pack_rgba_to_uint32
 
 from mujoco_warp_pbr._src.types import ToneMapper
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+# Rec. 709 / sRGB luminance weights.
+LUMINANCE_WEIGHTS = (0.2126, 0.7152, 0.0722)
 
 
 def exposure_from_ev100(ev100: float) -> float:
@@ -79,19 +86,43 @@ def srgb_eotf(x: float) -> float:
   return wp.pow((x + 0.055) * wp.static(1.0 / 1.055), 2.4)
 
 
-def make_display_transform(tone_mapper: int) -> wp.Function:
-  """Build exposed linear HDR -> tone-mapped linear [0, 1], specialised on the tone mapper.
+@wp.func
+def luminance(c: wp.vec3) -> float:
+  """Relative luminance of linear Rec. 709 colour."""
+  return wp.dot(c, wp.static(wp.vec3(*LUMINANCE_WEIGHTS)))
 
-  The result is still linear: average sub-pixel samples on it, then apply `srgb_oetf`.
+
+def srgb_to_linear(x: np.ndarray) -> np.ndarray:
+  """SRGB display values in [0, 1] -> linear (host-side `srgb_eotf`)."""
+  x = np.asarray(x, dtype=np.float64)
+  return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+@wp.func
+def display_transform(color: wp.vec3, tone_mapper: int) -> wp.vec3:
+  """Exposed linear HDR -> tone-mapped linear [0, 1].
+
+  The result is still linear: average sub-pixel samples on it, then encode (`encode_display`).
   """
+  c = wp.max(color, wp.vec3(0.0))
+  if tone_mapper == wp.static(int(ToneMapper.PBR_NEUTRAL)):
+    c = tonemap_pbr_neutral(c)
+  elif tone_mapper == wp.static(int(ToneMapper.ACES)):
+    c = tonemap_aces(c)
+  return wp.min(wp.max(c, wp.vec3(0.0)), wp.vec3(1.0))
+
+
+@wp.func
+def encode_display(c: wp.vec3) -> wp.uint32:
+  """Display-linear colour in [0, 1] -> 8-bit sRGB RGBA packed as MuJoCo Warp's rgb buffers."""
+  return pack_rgba_to_uint32(srgb_oetf(c[0]) * 255.0 + 0.5, srgb_oetf(c[1]) * 255.0 + 0.5, srgb_oetf(c[2]) * 255.0 + 0.5, 255.0)
+
+
+def make_display_transform(tone_mapper: int) -> Callable:
+  """`display_transform` specialised on a tone mapper: display_transform(color) -> color."""
 
   @wp.func
-  def display_transform(color: wp.vec3) -> wp.vec3:
-    c = wp.max(color, wp.vec3(0.0))
-    if wp.static(tone_mapper == ToneMapper.PBR_NEUTRAL):
-      c = tonemap_pbr_neutral(c)
-    elif wp.static(tone_mapper == ToneMapper.ACES):
-      c = tonemap_aces(c)
-    return wp.min(wp.max(c, wp.vec3(0.0)), wp.vec3(1.0))
+  def display_transform_static(color: wp.vec3) -> wp.vec3:
+    return display_transform(color, wp.static(int(tone_mapper)))
 
-  return display_transform
+  return display_transform_static
