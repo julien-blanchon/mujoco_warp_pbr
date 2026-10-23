@@ -8,6 +8,7 @@ version = "0.0.1"
 description = "Batched physically based renderer for MuJoCo Warp"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
+authors = [{name = "Julien Blanchon"}]
 requires-python = ">=3.10"
 dependencies = [
     "mujoco>=3.13.0",

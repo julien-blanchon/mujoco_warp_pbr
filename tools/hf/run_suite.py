@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["huggingface_hub>=1.0"]
 # ///
-# Copyright 2026 The mujoco_warp_pbr Authors
+# Copyright 2026 Julien Blanchon
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
