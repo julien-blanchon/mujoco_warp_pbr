@@ -96,33 +96,21 @@ class UnsetMaterial(enum.IntEnum):
   HEURISTIC = 1
 
 
-# Settings compiled into the kernels by default (bake groups of `kernel_inputs.BAKE_GROUPS`).
+# Settings compiled into the kernels by default (bake groups of `kernel_inputs.BAKE_GROUPS`): the
+# ones whose runtime version measured > 1% slower on DamagedHelmet or the material grid (4096 worlds
+# at 64², RTX PRO 6000, either tier). Every other setting is read at runtime: changing it needs no
+# recompilation.
 DEFAULT_BAKED = frozenset(
   {
-    "render_order",
-    "total_rays",
-    "samples_per_axis",
-    "clip",
-    "tone_mapper",
-    "render_hdr",
-    "any_rgb",
-    "light_model",
-    "has_spot",
-    "use_shadows",
-    "shadow_samples",
-    "shadow_light_fraction",
-    "headlight_active",
-    "headlight",
-    "has_env",
-    "env_background",
-    "inv_texel_angle",
-    "textures",
-    "specular_aa",
-    "vertex_normals",
-    "has_reflection",
-    "transparency",
-    "denoise",
-    "nlight",
+    "samples_per_axis",  # real-time: 20% on the material grid (sample loop)
+    "transparency",  # real-time: 10% (layer loop)
+    "has_reflection",  # 2-6% (mirror ray)
+    "textures",  # path: 6% on the material grid (texture code compiled in)
+    "nlight",  # real-time: 4% (unrolled light loop)
+    "has_env",  # real-time: 2.4%
+    "light_model",  # 1.5-2.5%
+    "denoise",  # path: 2.5% (denoiser feature writes)
+    "render_order",  # real-time: 1.2% (thread -> pixel mapping)
   }
 )
 

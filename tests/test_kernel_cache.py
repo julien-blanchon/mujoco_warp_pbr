@@ -20,6 +20,7 @@ import pytest
 import warp as wp
 
 import mujoco_warp_pbr as mjpbr
+from mujoco_warp_pbr._src.kernel_inputs import BAKE_GROUPS
 
 XML = """
 <mujoco>
@@ -33,14 +34,16 @@ XML = """
 </mujoco>
 """
 
+# (context field, new value, bake group of the field).
 CHANGES = [
-  ("render_order", mjpbr.RenderOrder.WORLD),
-  ("render_order", mjpbr.RenderOrder.ROW),
-  ("tone_mapper", mjpbr.ToneMapper.ACES),
-  ("use_shadows", False),
-  ("samples_per_pixel", 2),
-  ("shadow_light_fraction", 0.5),
+  ("render_order", mjpbr.RenderOrder.WORLD, "render_order"),
+  ("render_order", mjpbr.RenderOrder.ROW, "render_order"),
+  ("tone_mapper", mjpbr.ToneMapper.ACES, "tone_mapper"),
+  ("use_shadows", False, "use_shadows"),
+  ("samples_per_pixel", 2, "samples_per_axis"),
+  ("shadow_light_fraction", 0.5, "shadow_light_fraction"),
 ]
+BAKE_SETS = {"default": None, "runtime": frozenset(), "all": frozenset(BAKE_GROUPS)}
 
 
 def _segmentation(s) -> np.ndarray:
@@ -49,13 +52,13 @@ def _segmentation(s) -> np.ndarray:
   return out.numpy()
 
 
-@pytest.mark.parametrize("baked", [True, False], ids=["baked", "runtime"])
-@pytest.mark.parametrize("field,value", CHANGES, ids=[f"{f}={v}" for f, v in CHANGES])
-def test_change_after_first_render(scene, baked, field, value):
+@pytest.mark.parametrize("bake_set", list(BAKE_SETS))
+@pytest.mark.parametrize("field,value,group", CHANGES, ids=[f"{f}={v}" for f, v, _ in CHANGES])
+def test_change_after_first_render(scene, bake_set, field, value, group):
   """A setting changed after the first render renders as a context created with it."""
   s = scene(XML, nworld=2, cam_res=(24, 16), render_seg=True)
-  if not baked:
-    s.rc.baked = frozenset()
+  if BAKE_SETS[bake_set] is not None:
+    s.rc.baked = BAKE_SETS[bake_set]
   s.render()
   kernel = s.rc._megakernel
   setattr(s.rc, field, value)
@@ -64,7 +67,7 @@ def test_change_after_first_render(scene, baked, field, value):
   np.testing.assert_allclose(s.rgb(), expected.rgb(), atol=1.5 / 255)
   np.testing.assert_array_equal(_segmentation(s), _segmentation(expected))
   # Changing a baked setting rebuilds the kernel; runtime settings reuse it.
-  assert (s.rc._megakernel is not kernel) == baked
+  assert (s.rc._megakernel is not kernel) == (group in s.rc.baked)
 
 
 def test_tier_switch_rebuilds(scene):

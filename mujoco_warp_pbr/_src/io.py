@@ -84,10 +84,10 @@ def _check_default_material(default_material: Optional[dict]):
 
 def _warn_unsupported(mjm: mujoco.MjModel):
   if mjm.nflex and np.any(mjm.mat_texid[:, mujoco.mjtTextureRole.mjTEXROLE_NORMAL] >= 0):
-    warnings.warn("flex geometry is rendered without normal maps", stacklevel=4)
+    warnings.warn("flex geometry is rendered without normal maps", stacklevel=3)
   image_lights = np.nonzero(mjm.light_type == lights.LIGHT_IMAGE)[0]
   if image_lights.size:
-    warnings.warn(f"image lights are not supported and are ignored: {image_lights.tolist()}", stacklevel=4)
+    warnings.warn(f"image lights are not supported and are ignored: {image_lights.tolist()}", stacklevel=3)
 
 
 def _select_traversal(
