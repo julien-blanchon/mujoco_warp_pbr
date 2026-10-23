@@ -35,6 +35,8 @@ and the instance transforms from `geom_xpos` / `geom_xmat` (`Scene.write`), and 
 refitted or rebuilt (`Scene.build`, the OptiX calls).
 """
 
+from __future__ import annotations
+
 import dataclasses
 import logging
 import os
@@ -79,8 +81,8 @@ class OptixInstance:
 
 @wp.func
 def _local_box(
-  gtype: int, size: wp.vec3, dataid: int, mesh_lower: wp.array[wp.vec3], mesh_upper: wp.array[wp.vec3]
-) -> wp.spatial_vector:
+  gtype: int, size: wp.vec3, dataid: int, mesh_lower: wp.array1d[wp.vec3], mesh_upper: wp.array1d[wp.vec3]
+) -> wp.spatial_vector:  # pyrefly: ignore[not-a-type]  # stubs: spatial_vector is only a constructor
   """Centre and half extents of a geom's local bounding box (a mesh's in its GAS frame)."""
   if gtype == int(GeomType.MESH):
     if dataid < 0:
@@ -95,7 +97,7 @@ def _local_box(
 
 
 @wp.func
-def _gas_frame(gtype: int, dataid: int, mat: wp.mat33, mesh_frame_t: wp.array[wp.mat33]) -> wp.mat33:
+def _gas_frame(gtype: int, dataid: int, mat: wp.mat33, mesh_frame_t: wp.array1d[wp.mat33]) -> wp.mat33:
   """Rotation of a geom's GAS frame: geom_xmat, times R^T for a mesh GAS built in frame R."""
   if gtype == int(GeomType.MESH) and dataid >= 0:
     return mat @ mesh_frame_t[dataid]
@@ -104,16 +106,16 @@ def _gas_frame(gtype: int, dataid: int, mat: wp.mat33, mesh_frame_t: wp.array[wp
 
 @wp.kernel
 def _grow_bounds(
-  geom_type: wp.array[int],
+  geom_type: wp.array1d[int],
   geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_xpos: wp.array2d[wp.vec3],
   geom_xmat: wp.array2d[wp.mat33],
-  inst_geom: wp.array[int],
-  mesh_lower: wp.array[wp.vec3],
-  mesh_upper: wp.array[wp.vec3],
-  mesh_frame_t: wp.array[wp.mat33],
-  bounds: wp.array[float],
+  inst_geom: wp.array1d[int],
+  mesh_lower: wp.array1d[wp.vec3],
+  mesh_upper: wp.array1d[wp.vec3],
+  mesh_frame_t: wp.array1d[wp.mat33],
+  bounds: wp.array1d[float],
 ):
   """Grows `bounds` (lower xyz, upper xyz) to the union of all worlds' instance boxes."""
   worldid = wp.tid()
@@ -140,7 +142,7 @@ def _grow_bounds(
 
 
 @wp.kernel
-def _update_frame(bounds: wp.array[float], frame: wp.array[wp.vec3]):
+def _update_frame(bounds: wp.array1d[float], frame: wp.array1d[wp.vec3]):
   lo = wp.vec3(bounds[0], bounds[1], bounds[2])
   hi = wp.vec3(bounds[3], bounds[4], bounds[5])
   extent = hi - lo
@@ -153,7 +155,7 @@ def _update_frame(bounds: wp.array[float], frame: wp.array[wp.vec3]):
 
 @wp.kernel
 def _write_instances(
-  geom_type: wp.array[int],
+  geom_type: wp.array1d[int],
   geom_dataid: wp.array2d[int],
   geom_matid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
@@ -161,14 +163,14 @@ def _write_instances(
   mat_rgba: wp.array2d[wp.vec4],
   geom_xpos: wp.array2d[wp.vec3],
   geom_xmat: wp.array2d[wp.mat33],
-  tri_geom: wp.array[int],
-  mesh_handle: wp.array[wp.uint64],
-  mesh_frame_t: wp.array[wp.mat33],
+  tri_geom: wp.array1d[int],
+  mesh_handle: wp.array1d[wp.uint64],
+  mesh_frame_t: wp.array1d[wp.mat33],
   cube_handle: wp.uint64,
-  frame: wp.array[wp.vec3],
+  frame: wp.array1d[wp.vec3],
   grid: wp.vec3i,
   instance_flags: wp.uint32,
-  out: wp.array[OptixInstance],
+  out: wp.array1d[OptixInstance],
 ):
   """Triangle instance of (world, k): mesh or box geom tri_geom[k] on the world's cell.
 
@@ -203,7 +205,7 @@ def _write_instances(
 
 
 @wp.kernel
-def _write_gas_instance(handle: wp.uint64, sbt_offset: wp.uint32, flags: wp.uint32, index: int, out: wp.array[OptixInstance]):
+def _write_gas_instance(handle: wp.uint64, sbt_offset: wp.uint32, flags: wp.uint32, index: int, out: wp.array1d[OptixInstance]):
   """Identity instance of a world-space GAS."""
   inst = OptixInstance()
   inst.t0 = wp.vec4(1.0, 0.0, 0.0, 0.0)
@@ -219,18 +221,18 @@ def _write_gas_instance(handle: wp.uint64, sbt_offset: wp.uint32, flags: wp.uint
 
 @wp.kernel
 def _write_curves(
-  geom_type: wp.array[int],
+  geom_type: wp.array1d[int],
   geom_matid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_rgba: wp.array2d[wp.vec4],
   mat_rgba: wp.array2d[wp.vec4],
   geom_xpos: wp.array2d[wp.vec3],
   geom_xmat: wp.array2d[wp.mat33],
-  curve_geom: wp.array[int],
-  frame: wp.array[wp.vec3],
+  curve_geom: wp.array1d[int],
+  frame: wp.array1d[wp.vec3],
   grid: wp.vec3i,
-  vertices: wp.array[wp.vec3],
-  widths: wp.array[float],
+  vertices: wp.array1d[wp.vec3],
+  widths: wp.array1d[float],
 ):
   """Linear-curve segment of sphere / capsule (world, k): its axis, of the geom's radius.
 
@@ -258,18 +260,18 @@ Aabb = wp.types.vector(length=6, dtype=float)
 
 @wp.kernel
 def _write_primitive_bounds(
-  geom_type: wp.array[int],
+  geom_type: wp.array1d[int],
   geom_matid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_rgba: wp.array2d[wp.vec4],
   mat_rgba: wp.array2d[wp.vec4],
   geom_xpos: wp.array2d[wp.vec3],
   geom_xmat: wp.array2d[wp.mat33],
-  prim_geom: wp.array[int],
-  frame: wp.array[wp.vec3],
+  prim_geom: wp.array1d[int],
+  frame: wp.array1d[wp.vec3],
   grid: wp.vec3i,
-  aabbs: wp.array[Aabb],
-  visible: wp.array[wp.int32],
+  aabbs: wp.array1d[Aabb],
+  visible: wp.array1d[wp.int32],
 ):
   """World-space bounds of custom primitive (world, k); invisible geoms shrink to a point."""
   worldid, k = wp.tid()
@@ -290,7 +292,7 @@ def _write_primitive_bounds(
   visible[i] = wp.where(show, 1, 0)
 
 
-def _unit_cube() -> tuple[np.ndarray, np.ndarray]:
+def _unit_cube() -> tuple[np.ndarray[[8, 3], np.dtype[np.float32]], np.ndarray[[36], np.dtype[np.uint32]]]:
   """Vertices and flat triangle indices of the cube [-1, 1]^3.
 
   Triangles 2a and 2a + 1 form face a (normal `rt_trace.cube_face_normal(a)`), wound
@@ -344,6 +346,8 @@ def device_context(device: wp.Device) -> Any:
       options.validationMode = optix.DEVICE_CONTEXT_VALIDATION_MODE_ALL
     if hasattr(optix, "init"):
       optix.init()
+    if device.context is None:
+      raise RuntimeError(f"OptiX needs a CUDA device, got {device}")
     with wp.ScopedDevice(device):
       _CONTEXTS[key] = optix.deviceContextCreate(int(device.context), options)
   return _CONTEXTS[key]
@@ -355,6 +359,10 @@ def _stream() -> int:
 
 class _Accel:
   """An acceleration structure with its build input and buffers (kept alive together)."""
+
+  temp: wp.array1d[wp.uint8]
+  output: wp.array1d[wp.uint8]
+  handle: int
 
   def __init__(self, ctx: Any, build_input: Any, flags: int, keep: tuple = ()):
     import optix
@@ -446,13 +454,42 @@ class Scene:
     handle: IAS traversable handle (0 if nothing is instanced).
   """
 
+  plane_ids: tuple[int, ...]
+  grid: tuple[int, int, int]
+  frame: wp.array1d[wp.vec3]
+  curve_geom: wp.array1d[int]
+  prim_geom: wp.array1d[int]
+  prim_visible: wp.array1d[wp.int32]
+  handle: int
+  # Only with instances:
+  all_geom: wp.array1d[int]
+  bounds_init: wp.array1d[float]  # (lower xyz, upper xyz)
+  bounds: wp.array1d[float]
+  tri_geom: wp.array1d[int]
+  mesh_gas: list[_Accel]
+  mesh_handle: wp.array1d[wp.uint64]
+  mesh_lower: wp.array1d[wp.vec3]
+  mesh_upper: wp.array1d[wp.vec3]
+  mesh_frame_t: wp.array1d[wp.mat33]
+  cube_gas: _Accel | None
+  curve_gas: _Accel | None
+  curve_vertices: wp.array1d[wp.vec3]
+  curve_widths: wp.array1d[float]
+  curve_index: wp.array1d[wp.uint32]
+  prim_gas: _Accel | None
+  prim_aabbs: wp.array1d[Aabb]
+  prim_sbt: wp.array1d[wp.uint32]
+  gas_slots: list[_GasSlot]
+  instances: wp.array1d[OptixInstance]
+  ias: _Accel
+
   def __init__(
     self,
     m: Model,
     base: RenderContext,
     nworld: int,
     rebuild_every: int = 0,
-    mesh_frame: np.ndarray | None = None,
+    mesh_frame: np.ndarray[[int, 3, 3], np.dtype[np.float32]] | None = None,
   ):
     import optix
 
@@ -500,7 +537,7 @@ class Scene:
     self.prim_gas = self._prim_gas(geom_type)
     self._ias()
 
-  def _triangle_gas(self, points: wp.array, indices: wp.array) -> _Accel:
+  def _triangle_gas(self, points: wp.array1d[wp.vec3], indices: wp.array1d[Any]) -> _Accel:
     """Static triangle GAS (one SBT record) over `points` and flat uint32 `indices`, built now."""
     import optix
 
@@ -517,7 +554,7 @@ class Scene:
     gas.build(_stream())
     return gas
 
-  def _mesh_gases(self, base: RenderContext, mesh_frame: np.ndarray | None):
+  def _mesh_gases(self, base: RenderContext, mesh_frame: np.ndarray[[int, 3, 3], np.dtype[np.float32]] | None) -> None:
     """Triangle GAS per mesh, from MuJoCo Warp's mesh BVH vertices / indices, in frame R."""
     self.mesh_gas = []
     handles, lower, upper = [], [], []
@@ -555,7 +592,8 @@ class Scene:
       return None
     self.curve_vertices = wp.zeros(2 * ncurve, dtype=wp.vec3)
     self.curve_widths = wp.zeros(2 * ncurve, dtype=float)
-    self.curve_index = wp.array(np.arange(ncurve, dtype=np.uint32) * 2, dtype=wp.uint32)
+    # numpy stubs: no arange(stop, dtype=) overload.
+    self.curve_index = wp.array(np.arange(ncurve, dtype=np.uint32) * 2, dtype=wp.uint32)  # pyrefly: ignore[unexpected-keyword]
     curves = optix.BuildInputCurveArray()
     curves.curveType = optix.PRIMITIVE_TYPE_ROUND_LINEAR
     curves.numPrimitives = ncurve
@@ -572,7 +610,7 @@ class Scene:
     keep = (self.curve_vertices, self.curve_widths, self.curve_index)
     return _Accel(self.ctx, curves, dynamic_build_flags(), keep=keep)
 
-  def _prim_gas(self, geom_type: np.ndarray) -> _Accel | None:
+  def _prim_gas(self, geom_type: np.ndarray[[int], np.dtype[np.int32]]) -> _Accel | None:
     """World-space custom-primitive GAS (one SBT record per primitive type), built per frame."""
     import optix
 
@@ -592,12 +630,12 @@ class Scene:
     custom.sbtIndexOffsetStrideInBytes = 4
     return _Accel(self.ctx, custom, dynamic_build_flags(), keep=(self.prim_aabbs, self.prim_sbt))
 
-  def _ias(self):
+  def _ias(self) -> None:
     """IAS over the triangle instances (world-major), then the curve GAS, then the custom GAS."""
     import optix
 
     slot = self.nworld * len(self.tri_geom_list)
-    self.gas_slots: list[_GasSlot] = []
+    self.gas_slots = []
     for gas, sbt in ((self.curve_gas, self.curve_sbt), (self.prim_gas, self.custom_sbt)):
       if gas is not None:
         self.gas_slots.append(_GasSlot(gas, sbt, slot))
@@ -610,7 +648,7 @@ class Scene:
     """Whether the next `build` rebuilds the structures instead of refitting them."""
     return not self.built or (self.rebuild_every > 0 and self.frames % self.rebuild_every == 0)
 
-  def write(self, m: Model, d: Data):
+  def write(self, m: Model, d: Data) -> None:
     """Writes the cell, world-space primitives and triangle instances (Warp kernels).
 
     The cell bounds grow to cover the geometry. They restart from it on rebuild frames, except
@@ -675,7 +713,7 @@ class Scene:
         ],
       )
 
-  def build(self, stream: wp.Stream):
+  def build(self, stream: wp.Stream) -> None:
     """Refits (or rebuilds) the world-space GASes and the IAS on `stream` (OptiX calls)."""
     if not self.has_instances:
       return

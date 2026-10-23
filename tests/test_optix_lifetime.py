@@ -83,20 +83,48 @@ def test_rebuild_on_setting_change_and_close():
   wp.synchronize()
 
 
+def test_rebuild_on_compiled_in_setting_change():
+  _, _, m, d, rc = _setup(cam_res=(16, 16), render_rgb=True)
+  mjpbr.render(m, d, rc)
+  first = rc._optix
+  ref = rc.base.rgb_data.numpy().copy()
+  # A runtime setting reuses the programs.
+  rc.tone_mapper = mjpbr.ToneMapper.ACES
+  mjpbr.render(m, d, rc)
+  assert rc._optix is first
+  rc.tone_mapper = mjpbr.ToneMapper.PBR_NEUTRAL
+  # The raygen program bakes the world order (and render_order is a bake group).
+  assert "render_order" in rc.baked
+  rc.render_order = mjpbr.RenderOrder.WORLD
+  with pytest.warns(UserWarning, match="rebuilding"):
+    mjpbr.render(m, d, rc)
+  assert rc._optix is not first and first.closed
+  np.testing.assert_array_equal(rc.base.rgb_data.numpy(), ref)
+  # A baked setting that the raygen does not read directly also rebuilds.
+  second = rc._optix
+  rc.light_model = mjpbr.LightModel.MUJOCO
+  with pytest.warns(UserWarning, match="rebuilding"):
+    mjpbr.render(m, d, rc)
+  assert rc._optix is not second
+  wp.synchronize()
+
+
 def test_graph_after_release_does_not_hang_and_is_reported():
   _, _, m, d, rc = _setup(cam_res=(16, 16), render_rgb=True)
   rc.optix_graph_capture = True
   mjpbr.render(m, d, rc)
   with wp.ScopedCapture() as capture:
     mjpbr.render(m, d, rc)
-  wp.capture_launch(capture.graph)
+  captured = capture.graph  # None only when the capture failed
+  assert captured is not None
+  wp.capture_launch(captured)
   wp.synchronize()
   optix_backend.check(rc)  # nothing to report
   rc.optix_rebuild_every = 3
   old = rc._optix  # its Warp buffers stay alive (the graph's kernels still write them)
   with pytest.warns(UserWarning, match="rebuilding"):
     mjpbr.render(m, d, rc)  # closes the renderer the graph was captured with
-  wp.capture_launch(capture.graph)
+  wp.capture_launch(captured)
   wp.synchronize()  # must not hang
   with pytest.raises(RuntimeError, match="released"):
     optix_backend.check(rc)
@@ -111,13 +139,15 @@ def test_worker_errors_are_reported_by_check():
   mjpbr.render(m, d, rc)
   with wp.ScopedCapture() as capture:
     mjpbr.render(m, d, rc)
+  captured = capture.graph  # None only when the capture failed
+  assert captured is not None
   renderer = rc._optix
 
   def fail(stream, width):
     raise ValueError("injected")
 
   renderer.pipeline.trace = fail
-  wp.capture_launch(capture.graph)
+  wp.capture_launch(captured)
   wp.synchronize()
   with pytest.raises(RuntimeError, match="captured graph failed") as info:
     optix_backend.check(rc)

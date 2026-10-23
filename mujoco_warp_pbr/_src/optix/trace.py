@@ -34,6 +34,8 @@ Hits by geom type (see `accel.py`):
   `ray_*` functions (`make_intersection`).
 """
 
+from collections.abc import Callable
+
 import warp as wp
 from mujoco_warp._src.ray import RAY_TOL_REL
 from mujoco_warp._src.ray import ray_capsule
@@ -113,7 +115,7 @@ def cube_face_normal(face: int) -> wp.vec3:
 
 
 @wp.func
-def world_offset(frame: wp.array[wp.vec3], grid: wp.vec3i, worldid: int) -> wp.vec3:
+def world_offset(frame: wp.array1d[wp.vec3], grid: wp.vec3i, worldid: int) -> wp.vec3:
   """Translation of world `worldid` in the shared IAS."""
   ix = worldid % grid[0]
   iy = (worldid // grid[0]) % grid[1]
@@ -127,7 +129,7 @@ def world_offset(frame: wp.array[wp.vec3], grid: wp.vec3i, worldid: int) -> wp.v
 
 
 @wp.func
-def clip_to_cell(frame: wp.array[wp.vec3], origin: wp.vec3, direction: wp.vec3, max_dist: float) -> wp.vec2:
+def clip_to_cell(frame: wp.array1d[wp.vec3], origin: wp.vec3, direction: wp.vec3, max_dist: float) -> wp.vec2:
   """Parameter interval [t0, t1] of the ray inside the world's cell (empty if t0 > t1)."""
   lower = frame[FRAME_LOWER]
   upper = frame[FRAME_UPPER]
@@ -149,7 +151,7 @@ def clip_to_cell(frame: wp.array[wp.vec3], origin: wp.vec3, direction: wp.vec3, 
 
 
 @wp.func
-def world_geom(index: int, geoms: wp.array[int]) -> tuple[int, int]:
+def world_geom(index: int, geoms: wp.array1d[int]) -> tuple[int, int]:
   """(world, geom) of primitive `world · len(geoms) + k` (geom geoms[k]) of a world-space GAS."""
   n = geoms.shape[0]
   worldid = index // n
@@ -167,7 +169,7 @@ def _plane_vector(plane_ids: tuple[int, ...]):
   return wp.types.vector(length=max(len(plane_ids), 1), dtype=wp.int32)(*(plane_ids or (0,)))
 
 
-def _make_plane_hit(cull_backfaces: bool) -> wp.Function:
+def _make_plane_hit(cull_backfaces: bool) -> Callable[..., tuple[float, wp.vec3]]:
   @wp.func
   def plane_hit(geo: Geometry, worldid: int, gi: int, origin: wp.vec3, direction: wp.vec3) -> tuple[float, wp.vec3]:
     """Distance (< 0: no hit) and normal of plane gi; transparent planes are not hit."""
@@ -197,7 +199,7 @@ def make_trace(
   has_instances: bool,
   cull_backfaces: bool,
   closest_ray_flags: int,
-) -> tuple[wp.Function, wp.Function]:
+) -> tuple[Callable[..., Hit], Callable[..., bool]]:
   """Returns (trace_closest, trace_any) with the signatures of `trace.make_trace`.
 
   Args:
@@ -228,7 +230,7 @@ def make_trace(
       span = clip_to_cell(geo.rt_frame, origin, direction, max_dist)
       if span[0] <= span[1]:
         offset = world_offset(geo.rt_frame, geo.rt_grid, worldid)
-        r = wp.mjpbr_optix_trace_closest(geo.rt_handle, origin + offset, direction, span[0], span[1], flags)
+        r = wp.mjpbr_optix_trace_closest(geo.rt_handle, origin + offset, direction, span[0], span[1], flags)  # pyrefly: ignore[missing-attribute]
         if r.instance >= 0:
           gi = r.instance - worldid * geo.geom_type.shape[0]
           # Curves and custom primitives report a world-space normal; triangles their barycentrics.
@@ -278,24 +280,24 @@ def make_trace(
       span = clip_to_cell(geo.rt_frame, origin, direction, max_dist)
       if span[0] <= span[1]:
         offset = world_offset(geo.rt_frame, geo.rt_grid, worldid)
-        return wp.mjpbr_optix_trace_any(geo.rt_handle, origin + offset, direction, span[0], span[1])
+        return wp.mjpbr_optix_trace_any(geo.rt_handle, origin + offset, direction, span[0], span[1])  # pyrefly: ignore[missing-attribute]
     return False
 
   return trace_closest, trace_any
 
 
 @wp.func
-def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> tuple[float, wp.vec3, int]:
+def curve_hit(geo: Geometry, curve_geom: wp.array1d[int]) -> tuple[float, wp.vec3, int]:
   """Closest hit on curve segment `world · ncurve + k` (sphere or capsule geom curve_geom[k]).
 
   Re-runs MuJoCo Warp's `ray_sphere` / `ray_capsule` on the world ray; if that disagrees with
   OptiX's hit (it should not), keeps OptiX's distance with the analytic normal there. Returns
   (distance, world normal, world · ngeom + geom).
   """
-  worldid, gi = world_geom(wp.mjpbr_optix_primitive_index(), curve_geom)
-  pnt = wp.mjpbr_optix_world_ray_origin()
-  vec = wp.mjpbr_optix_world_ray_direction()
-  t = wp.mjpbr_optix_ray_tmax()
+  worldid, gi = world_geom(wp.mjpbr_optix_primitive_index(), curve_geom)  # pyrefly: ignore[missing-attribute]
+  pnt = wp.mjpbr_optix_world_ray_origin()  # pyrefly: ignore[missing-attribute]
+  vec = wp.mjpbr_optix_world_ray_direction()  # pyrefly: ignore[missing-attribute]
+  t = wp.mjpbr_optix_ray_tmax()  # pyrefly: ignore[missing-attribute]
   pos, mat, size = geom_pose(geo, worldid, gi)
   capsule = geo.geom_type[gi] == int(GeomType.CAPSULE)
   d = float(-1.0)
@@ -315,7 +317,7 @@ def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> tuple[float, wp.vec3,
   return d, n, worldid * geo.geom_type.shape[0] + gi
 
 
-def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
+def make_intersection(gtype: int, cull_backfaces: bool) -> Callable[..., tuple[float, wp.vec3, int]]:
   """Intersection of the world ray with custom primitive `world · nprim + k` of the primitive GAS.
 
   Runs MuJoCo Warp's `ray_*` function of geom `prim_geom[k]` on its world pose translated onto the
@@ -323,15 +325,15 @@ def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
   """
 
   @wp.func
-  def intersect(geo: Geometry, prim_geom: wp.array[int], prim_visible: wp.array[wp.int32]) -> tuple[float, wp.vec3, int]:
-    index = wp.mjpbr_optix_primitive_index()
+  def intersect(geo: Geometry, prim_geom: wp.array1d[int], prim_visible: wp.array1d[wp.int32]) -> tuple[float, wp.vec3, int]:
+    index = wp.mjpbr_optix_primitive_index()  # pyrefly: ignore[missing-attribute]
     d = float(-1.0)
     n = wp.vec3(0.0)
     worldid, gi = world_geom(index, prim_geom)
     if prim_visible[index] == 0:
       return d, n, 0
-    pnt = wp.mjpbr_optix_world_ray_origin()
-    vec = wp.mjpbr_optix_world_ray_direction()
+    pnt = wp.mjpbr_optix_world_ray_origin()  # pyrefly: ignore[missing-attribute]
+    vec = wp.mjpbr_optix_world_ray_direction()  # pyrefly: ignore[missing-attribute]
     pos, mat, size = geom_pose(geo, worldid, gi)
     if wp.static(gtype == int(GeomType.ELLIPSOID)):
       d, n = ray_ellipsoid(pos, mat, size, pnt, vec)

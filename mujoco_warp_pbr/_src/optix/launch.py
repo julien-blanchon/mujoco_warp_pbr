@@ -33,13 +33,15 @@ worker thread, triggered by two host nodes of the graph (`graph.Bridge`). A rend
 not be rendered eagerly while one of its graphs runs: both would update the same structures.
 """
 
+from __future__ import annotations
+
 import copy
 import ctypes
 import dataclasses
 import os
 import re
 import warnings
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import warp as wp
@@ -98,13 +100,13 @@ class Params:
   out: Outputs
   seed: int
   nworld: int
-  curve_geom: wp.array[int]
-  prim_geom: wp.array[int]
-  prim_visible: wp.array[wp.int32]
+  curve_geom: wp.array1d[int]
+  prim_geom: wp.array1d[int]
+  prim_visible: wp.array1d[wp.int32]
 
 
 @wp.kernel
-def _store_params(params: Params, out: wp.array[Params]):
+def _store_params(params: Params, out: wp.array1d[Params]):
   out[0] = params
 
 
@@ -139,7 +141,7 @@ def _build_programs(m: Model, rc: PbrRenderContext, scene: accel.Scene, closest_
 
   @_program(module, "__raygen__render")
   def raygen(p: Params):
-    i = wp.mjpbr_optix_launch_index()
+    i = wp.mjpbr_optix_launch_index()  # pyrefly: ignore[missing-attribute]
     if wp.static(world_order):
       rayid = i // p.nworld
       worldid = i - rayid * p.nworld
@@ -150,22 +152,22 @@ def _build_programs(m: Model, rc: PbrRenderContext, scene: accel.Scene, closest_
 
   @_program(module, "__miss__render")
   def miss(p: Params):
-    wp.mjpbr_optix_miss()
+    wp.mjpbr_optix_miss()  # pyrefly: ignore[missing-attribute]
 
   @_program(module, "__closesthit__triangle")
   def closesthit_triangle(p: Params):
-    wp.mjpbr_optix_closesthit_triangle()
+    wp.mjpbr_optix_closesthit_triangle()  # pyrefly: ignore[missing-attribute]
 
   @_program(module, "__closesthit__custom")
   def closesthit_custom(p: Params):
-    wp.mjpbr_optix_closesthit_custom()
+    wp.mjpbr_optix_closesthit_custom()  # pyrefly: ignore[missing-attribute]
 
   if scene.has_curves:
 
     @_program(module, "__closesthit__curve")
     def closesthit_curve(p: Params):
       d, n, code = rt_trace.curve_hit(p.geo, p.curve_geom)
-      wp.mjpbr_optix_set_hit(d, code, wp.mjpbr_optix_primitive_index(), n)
+      wp.mjpbr_optix_set_hit(d, code, wp.mjpbr_optix_primitive_index(), n)  # pyrefly: ignore[missing-attribute]
 
   def intersection_program(gtype: int):
     intersect = rt_trace.make_intersection(gtype, cull)
@@ -174,7 +176,7 @@ def _build_programs(m: Model, rc: PbrRenderContext, scene: accel.Scene, closest_
     def intersection(p: Params):
       d, n, code = intersect(p.geo, p.prim_geom, p.prim_visible)
       if d >= 0.0:
-        wp.mjpbr_optix_report_intersection(d, n, code)
+        wp.mjpbr_optix_report_intersection(d, n, code)  # pyrefly: ignore[missing-attribute]
 
   for gtype in scene.primitive_types:
     intersection_program(gtype)
@@ -212,6 +214,13 @@ def _entry_names(ptx: bytes, required: list[str]) -> dict[str, str]:
 
 class Pipeline:
   """Compiled OptiX module, program groups, pipeline and shader binding table."""
+
+  module: Any
+  groups: list[Any]
+  pipeline: Any
+  sbt: Any
+  params: wp.array[Params, [1]]
+  params_size: int
 
   def __init__(self, ctx: Any, module: wp.Module, scene: accel.Scene, max_registers: int):
     import optix
@@ -328,17 +337,17 @@ class Pipeline:
     details = "; ".join(f"PTX for sm_{arch}: {e}" for arch, e in errors)
     raise RuntimeError(f"OptiX could not create the program module ({details})") from errors[0][1]
 
-  def store(self, params: Params):
+  def store(self, params: Params) -> None:
     """Copies the launch parameters into the device buffer read by `trace` (a Warp kernel)."""
     wp.launch(_store_params, dim=1, inputs=[params, self.params])
 
-  def trace(self, stream: wp.Stream, width: int):
+  def trace(self, stream: wp.Stream, width: int) -> None:
     """Launches the pipeline (`optixLaunch`) over `width` launch indices on `stream`."""
     import optix
 
     optix.launch(self.pipeline, int(stream.cuda_stream), self.params.ptr, self.params_size, self.sbt, width, 1, 1)
 
-  def destroy(self):
+  def destroy(self) -> None:
     """Destroys the OptiX pipeline, program groups and module (once; no launch may be pending)."""
     if self._destroyed:
       return
@@ -361,7 +370,7 @@ def _make_downsample(rc: PbrRenderContext, n: int) -> wp.Kernel:
   inv = 1.0 / float(n * n)
 
   @wp.kernel(module="unique", enable_backward=False, module_options=kernel_inputs.module_options(rc))
-  def downsample(cams: Cameras, exposure: wp.array[float], hi: Outputs, out: Outputs):
+  def downsample(cams: Cameras, exposure: wp.array1d[float], hi: Outputs, out: Outputs):
     worldid, rayid = wp.tid()
     camid = int(-1)
     pixelid = int(-1)
@@ -400,7 +409,7 @@ def _make_downsample(rc: PbrRenderContext, n: int) -> wp.Kernel:
     if out.render_seg[camid]:
       out.seg[worldid, out.seg_adr[camid] + pixelid] = hi.seg[worldid, hi.seg_adr[camid] + first]
 
-  return downsample
+  return downsample  # pyrefly: ignore[bad-return]  # @wp.kernel(...) is untyped: Pyrefly sees the function, Warp returns a Kernel
 
 
 def _supersampled_context(rc: PbrRenderContext, n: int) -> PbrRenderContext:
@@ -418,7 +427,7 @@ def _supersampled_context(rc: PbrRenderContext, n: int) -> PbrRenderContext:
     adr = getattr(base, name).numpy()
     setattr(hi, name, wp.array(np.where(adr >= 0, adr * n * n, adr), dtype=int))
 
-  def buffer(data: wp.array, rendered: wp.array, dtype: Any) -> wp.array:
+  def buffer(data: wp.array2d[Any], rendered: wp.array1d[bool], dtype: Any) -> wp.array2d[Any]:
     # Without any camera rendering it, the buffer is a placeholder (nworld, 1).
     return wp.zeros((nworld, data.shape[1] * n * n if rendered.numpy().any() else 1), dtype=dtype)
 
@@ -447,6 +456,9 @@ class _Supersampling:
   kernel then averages them into the context's outputs.
   """
 
+  rc_hi: PbrRenderContext
+  kernel: wp.Kernel
+
   def __init__(self, rc: PbrRenderContext, n: int):
     self.rc_hi = _supersampled_context(rc, n)
     self.kernel = _make_downsample(rc, n)
@@ -469,7 +481,7 @@ class _Supersampling:
     view._optix = None
     return view
 
-  def downsample(self, m: Model, d: Data, rc: PbrRenderContext, hi: Outputs):
+  def downsample(self, m: Model, d: Data, rc: PbrRenderContext, hi: Outputs) -> None:
     # Cameras and outputs of rc, rebuilt when an array they read (kernel_inputs) is replaced.
     key = (m.cam_projection, m.cam_fovy, m.cam_sensorsize, m.cam_intrinsic, d.cam_xpos, d.cam_xmat, rc.base, rc.hdr_data)
     if not _same(key, self._inputs_key):
@@ -479,14 +491,23 @@ class _Supersampling:
     wp.launch(self.kernel, dim=(d.nworld, rc.base.total_rays), inputs=[cams, rc.exposure, hi, out])
 
 
-def _spec_key(rc: PbrRenderContext, nworld: int) -> tuple:
-  """Settings an OptixRenderer is built for; it is rebuilt when they change."""
+def _spec_key(m: Model, rc: PbrRenderContext, nworld: int) -> tuple:
+  """Settings an OptixRenderer is built for; it is rebuilt when they change.
+
+  Besides its own settings, the programs compile in what the megakernel is specialised on
+  (`kernel_inputs.kernel_key`: the baked settings among others), the ray count and the world
+  order of the raygen program, and the register cap chosen from has_reflection.
+  """
   return (
     nworld,
     rc.samples_per_pixel,
     rc.optix_rebuild_every,
     rc.optix_max_registers,
     id(rc.mesh_bvh_frame),
+    int(rc.base.total_rays),
+    rc.render_order == RenderOrder.WORLD,
+    bool(rc.has_reflection),
+    kernel_inputs.kernel_key(m, rc, kernel_inputs.settings_values(rc)),
   )
 
 
@@ -497,15 +518,33 @@ class OptixRenderer:
   samples as an n×-resolution spp-1 image that a Warp kernel then downsamples.
   """
 
+  key: tuple
+  device: wp.Device
+  supersampling: _Supersampling | None
+  scene: accel.Scene
+  module: wp.Module
+  pipeline: Pipeline
+  nworld: int
+  width: int
+  params: Params
+  part_keys: dict[str, bytes]
+  captured_handle: int | None
+  closed: bool
+
   def __init__(self, m: Model, d: Data, rc: PbrRenderContext):
     import optix
 
-    self.key = _spec_key(rc, d.nworld)
+    self.key = _spec_key(m, rc, d.nworld)
     self.device = wp.get_device()
     n = rc.samples_per_pixel
     self.supersampling = _Supersampling(rc, n) if n > 1 and bool(rc.base.render_rgb.numpy().all()) else None
     rc_prog = self.supersampling.rc_hi if self.supersampling is not None else rc
-    mesh_frame = rc.mesh_bvh_frame.numpy() if rc.mesh_bvh_frame is not None else None
+    # wp.array.numpy() has no declared return type in the stubs: (nmesh, 3, 3) float32 from mat33.
+    mesh_frame = (
+      cast("np.ndarray[[int, 3, 3], np.dtype[np.float32]]", rc.mesh_bvh_frame.numpy())
+      if rc.mesh_bvh_frame is not None
+      else None
+    )
     self.scene = accel.Scene(m, rc.base, d.nworld, rebuild_every=rc.optix_rebuild_every, mesh_frame=mesh_frame)
     cull = bool(rc.base.enable_backface_culling)
     flags = int(optix.RAY_FLAG_CULL_BACK_FACING_TRIANGLES) if cull else 0
@@ -603,7 +642,7 @@ class OptixRenderer:
     if detach is not None:
       detach()
 
-  def __del__(self):
+  def __del__(self) -> None:
     # Only the bridge: the OptiX objects need a device synchronisation (not during a capture).
     bridge = getattr(self, "bridge", None)
     if bridge is not None:
@@ -623,15 +662,15 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0) -> None:
 
   Inside CUDA graph capture this needs `rc.optix_graph_capture` (see `graph.py` and
   `PbrRenderContext`) and a first render of `rc` outside the capture, which compiles the programs
-  and builds the acceleration structures. Changing nworld, samples_per_pixel, mesh_bvh_frame or
-  an optix_* setting rebuilds them at the next render.
+  and builds the acceleration structures. Changing nworld, samples_per_pixel, mesh_bvh_frame, an
+  optix_* setting or a compiled-in setting (see `_spec_key`) rebuilds them at the next render.
 
   Raises:
     RuntimeError: when called during a capture without `rc.optix_graph_capture`, before the
       first eager render (or after such a change), or where the host-function bridge is
       unavailable (non-Linux); and for errors of OptiX work run by replayed graphs (`check`).
   """
-  key = _spec_key(rc, d.nworld)
+  key = _spec_key(m, rc, d.nworld)
   if wp.get_stream().is_capturing:
     if not rc.optix_graph_capture:
       raise RuntimeError(
@@ -645,12 +684,12 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0) -> None:
       raise RuntimeError(
         'traversal="optix": render once outside the CUDA graph capture first (it compiles the OptiX '
         "programs and builds the acceleration structures; again after changing nworld, samples_per_pixel, "
-        "mesh_bvh_frame or an optix_* setting)"
+        "mesh_bvh_frame, an optix_* setting or a compiled-in setting)"
       )
   if rc._optix is not None and rc._optix.key != key:
     warnings.warn(
-      "nworld, samples_per_pixel, mesh_bvh_frame or an optix_* setting changed since the OptiX structures "
-      "were built; rebuilding them",
+      "nworld, samples_per_pixel, mesh_bvh_frame, an optix_* setting or a compiled-in setting changed since "
+      "the OptiX structures were built; rebuilding them",
       stacklevel=2,
     )
     rc._optix.close()
