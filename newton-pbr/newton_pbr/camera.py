@@ -235,8 +235,10 @@ def _write_outputs(
   seg = seg_in[view, pixel]
   hit = seg[0] >= 0 and seg[1] == _OBJ_GEOM
   if world < 0 or world >= world_count:
+    # A disabled view: cleared (its render shows world 0).
     hit = False
     background = False
+    world = 0
   if not hit:
     # Newton writes the clear values where nothing is hit; a visible environment map is kept.
     if want_color:

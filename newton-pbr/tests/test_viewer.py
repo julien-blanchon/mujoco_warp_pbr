@@ -26,9 +26,10 @@ newton = pytest.importorskip("newton")
 import newton_pbr  # noqa: E402
 
 _W, _H = 48, 32
+_DEVICES = ["cpu", *(["cuda:0"] if wp.is_cuda_available() else [])]
 
 
-def _model(nworld: int = 1):
+def _model(nworld: int = 1, device: str = "cpu"):
   world = newton.ModelBuilder()
   body = world.add_body(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()))
   world.add_shape_box(body, hx=0.3, hy=0.2, hz=0.25, color=(0.9, 0.1, 0.1))
@@ -36,8 +37,8 @@ def _model(nworld: int = 1):
   scene = newton.ModelBuilder()
   scene.add_ground_plane()
   scene.replicate(world, nworld)
-  with wp.ScopedDevice("cpu"):
-    model = scene.finalize(device="cpu")
+  with wp.ScopedDevice(device):
+    model = scene.finalize(device=device)
   return model, model.state()
 
 
@@ -54,9 +55,10 @@ def _run(viewer, model, state, frames: int = 2) -> np.ndarray:
   return viewer.get_frame().numpy()
 
 
-def test_headless_frame_matches_sensor_camera():
-  model, state = _model()
-  with wp.ScopedDevice("cpu"):
+@pytest.mark.parametrize("device", _DEVICES)
+def test_headless_frame_matches_sensor_camera(device):
+  model, state = _model(device=device)
+  with wp.ScopedDevice(device):
     viewer = newton_pbr.ViewerPbr(width=_W, height=_H, headless=True, num_frames=2)
     frame = _run(viewer, model, state)
     assert frame.shape == (_H, _W, 3) and frame.dtype == np.uint8
@@ -68,10 +70,10 @@ def test_headless_frame_matches_sensor_camera():
     rot = np.stack([right, up, -front], axis=1).astype(np.float32)
     pose = wp.transformf(wp.vec3f(*np.asarray(camera.pos, dtype=np.float32)), wp.quat_from_matrix(wp.mat33f(*rot.ravel())))
     sensor = newton_pbr.SensorCamera(model)
-    rays = sensor.compute_camera_rays_pinhole(_W, _H, camera_fov=math.radians(camera.fov), device="cpu")
+    rays = sensor.compute_camera_rays_pinhole(_W, _H, camera_fov=math.radians(camera.fov), device=device)
     color = sensor.allocate_image_color(1, _W, _H)
     config = sensor.RenderConfig(enable_shadows=True, enable_textures=True)
-    sensor.update(state, wp.array([pose], dtype=wp.transformf, device="cpu"), rays, color_image=color, render_config=config)
+    sensor.update(state, wp.array([pose], dtype=wp.transformf, device=device), rays, color_image=color, render_config=config)
   rgb = np.stack([np.right_shift(color.numpy()[0], s) & 0xFF for s in (0, 8, 16)], axis=-1)
   diff = np.abs(rgb.astype(int) - frame.astype(int)).max(axis=-1)
   assert np.mean(diff <= 2) > 0.99

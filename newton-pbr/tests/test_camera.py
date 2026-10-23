@@ -49,6 +49,7 @@ _NEWTON_TESTS = [
   "test_update_supports_all_render_orders_with_3d_outputs",
 ]
 _RES = 40
+_DEVICES = ["cpu", *(["cuda:0"] if wp.is_cuda_available() else [])]
 _FOV = math.radians(50.0)
 
 
@@ -62,7 +63,7 @@ def test_newton_scenario(monkeypatch, name):
     getattr(case, name)()
 
 
-def _scene(nworld: int = 2) -> tuple[Any, Any, Any]:
+def _scene(nworld: int = 2, device: str = "cpu") -> tuple[Any, Any, Any]:
   """Two worlds with every primitive type and a mesh; world 1 shifted; one camera per world."""
   world = newton.ModelBuilder()
   body = world.add_body(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()))
@@ -76,16 +77,16 @@ def _scene(nworld: int = 2) -> tuple[Any, Any, Any]:
   scene = newton.ModelBuilder()
   scene.add_ground_plane()
   scene.replicate(world, nworld)
-  with wp.ScopedDevice("cpu"):
-    model = scene.finalize(device="cpu")
+  with wp.ScopedDevice(device):
+    model = scene.finalize(device=device)
     state = model.state()
   q = state.body_q.numpy()
   q[len(q) // nworld :, 1] += 0.3
   state.body_q.assign(q)
-  return model, state, _look_at([0.0, -3.0, 1.2], nworld)
+  return model, state, _look_at([0.0, -3.0, 1.2], nworld, device)
 
 
-def _look_at(eye: list[float], count: int, target=(0.0, 0.0, 0.3)) -> Any:
+def _look_at(eye: list[float], count: int, device: Any = "cpu", target=(0.0, 0.0, 0.3)) -> Any:
   eye_np = np.asarray(eye, dtype=np.float64)
   forward = np.asarray(target) - eye_np
   # numpy stubs: norm returns a bare `floating`, which no array operator accepts.
@@ -95,7 +96,7 @@ def _look_at(eye: list[float], count: int, target=(0.0, 0.0, 0.3)) -> Any:
   up = np.cross(right, forward)
   rot = np.stack([right, up, -forward], axis=1).astype(np.float32)
   cam = wp.transformf(wp.vec3f(*eye_np), wp.quat_from_matrix(wp.mat33f(rot.flatten())))
-  return wp.array([cam] * count, dtype=wp.transformf, device="cpu")
+  return wp.array([cam] * count, dtype=wp.transformf, device=device)
 
 
 _OUTPUTS = ("color", "depth", "depth_forward", "shape_index", "normal", "albedo", "color_hdr")
@@ -104,7 +105,7 @@ _OUTPUTS = ("color", "depth", "depth_forward", "shape_index", "normal", "albedo"
 def _render(cls, model, state, cams, rays, world_indices=None, **kwargs) -> dict[str, np.ndarray]:
   views = cams.shape[0]
   height, width = rays.shape[:2]
-  with wp.ScopedDevice("cpu"):
+  with wp.ScopedDevice(model.device):
     sensor = cls(model, **kwargs)
     sensor.create_default_light()
     images = {name: getattr(sensor, f"allocate_image_{name}")(views, width, height) for name in _OUTPUTS}
@@ -144,14 +145,14 @@ def _assert_geometry_matches(ours: dict[str, np.ndarray], ref: dict[str, np.ndar
   return hit
 
 
-@pytest.fixture(scope="module")
-def scene():
-  return _scene()
+@pytest.fixture(scope="module", params=_DEVICES)
+def scene(request):
+  return _scene(device=request.param)
 
 
 def test_pinhole_parity_with_newton(scene):
   model, state, cams = scene
-  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device="cpu")
+  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device=model.device)
   ours = _render(SensorCamera, model, state, cams, rays)
   ref = _render(NewtonSensorCamera, model, state, cams, rays)
   hit = _assert_geometry_matches(ours, ref)
@@ -169,7 +170,7 @@ def test_pinhole_parity_with_newton(scene):
 def test_fisheye_parity_with_newton(scene):
   model, state, cams = scene
   rays = SensorCamera.compute_camera_rays_fisheye_opencv(
-    _RES, _RES, fx=14.0, fy=14.0, cx=_RES / 2, cy=_RES / 2, k1=0.05, max_fov=math.radians(170.0), device="cpu"
+    _RES, _RES, fx=14.0, fy=14.0, cx=_RES / 2, cy=_RES / 2, k1=0.05, max_fov=math.radians(170.0), device=model.device
   )
   ours = _render(SensorCamera, model, state, cams, rays)
   ref = _render(NewtonSensorCamera, model, state, cams, rays)
@@ -182,11 +183,11 @@ def test_views_follow_world_indices(scene):
   cams = wp.array(
     [*_look_at([-0.1, -3.0, 1.2], 1).numpy(), *_look_at([0.1, -3.0, 1.2], 1).numpy(), *_look_at([0.0, -3.0, 1.2], 3).numpy()],
     dtype=wp.transformf,
-    device="cpu",
+    device=model.device,
   )
   flags = [1, 1, 0, int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), 7]
-  world_indices = wp.array(flags, dtype=wp.int32, device="cpu")
-  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device="cpu")
+  world_indices = wp.array(flags, dtype=wp.int32, device=model.device)
+  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device=model.device)
   ours = _render(SensorCamera, model, state, cams, rays, world_indices=world_indices)
   ref = _render(NewtonSensorCamera, model, state, cams, rays, world_indices=world_indices)
   _assert_geometry_matches(ours, ref)
@@ -199,14 +200,14 @@ def test_views_follow_world_indices(scene):
 
 def test_clear_data_and_linear_color_space(scene):
   model, state, cams = scene
-  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device="cpu")
+  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device=model.device)
   clear = SensorCamera.ClearData(
     clear_color=0xFF336699, clear_depth=-1.0, clear_shape_index=77, clear_normal=(0.0, 1.0, 0.0), clear_albedo=0x80112233
   )
   config = SensorCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
   results = {}
   for cls in (SensorCamera, NewtonSensorCamera):
-    with wp.ScopedDevice("cpu"):
+    with wp.ScopedDevice(model.device):
       sensor = cls(model, default_clear_data=clear, default_render_config=config)
       color = sensor.allocate_image_color(2, _RES, _RES)
       albedo = sensor.allocate_image_albedo(2, _RES, _RES)
@@ -237,8 +238,8 @@ def test_clear_data_and_linear_color_space(scene):
 
 def test_shadows_follow_render_config(scene):
   model, state, cams = scene
-  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device="cpu")
-  with wp.ScopedDevice("cpu"):
+  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device=model.device)
+  with wp.ScopedDevice(model.device):
     sensor = SensorCamera(model)
     sensor.create_default_light(direction=wp.vec3f(0.0, 0.6, -0.8))
     colors = []
@@ -275,8 +276,8 @@ def test_deformables_warn_once():
 def test_checkerboard_material(scene):
   model, state, cams = scene
   plane = int(np.flatnonzero(model.shape_type.numpy() == int(newton.GeoType.PLANE))[0])
-  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device="cpu")
-  with wp.ScopedDevice("cpu"):
+  rays = SensorCamera.compute_camera_rays_pinhole(_RES, _RES, camera_fov=_FOV, device=model.device)
+  with wp.ScopedDevice(model.device):
     sensor = SensorCamera(model)
     sensor.assign_checkerboard_material(shape_indices=[plane], resolution=8, checker_size=1)
     albedo = sensor.allocate_image_albedo(2, _RES, _RES)

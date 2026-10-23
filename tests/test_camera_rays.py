@@ -41,6 +41,7 @@ _XML = """
   </mujoco>
 """
 _RES = (24, 16)
+_DEVICES = ["cpu", *(["cuda:0"] if wp.is_cuda_available() else [])]
 
 
 def pinhole_rays(width: int, height: int, fovy_deg: float, offset: float = 0.5) -> np.ndarray:
@@ -74,13 +75,14 @@ def _ray_scale(offset: float, fovys=(50.0, 70.0)) -> np.ndarray:
   return np.concatenate([1.0 / -pinhole_rays(*_RES, f, offset)[..., 1, 2].ravel() for f in fovys])
 
 
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
   "options",
   [{}, {"samples_per_pixel": 2}, {"tier": mjpbr.Tier.PATH, "path_samples": 4}],
   ids=["realtime", "supersampled", "path"],
 )
-def test_pinhole_rays_match_pinhole_cameras(scene, options):
-  with wp.ScopedDevice("cpu"):
+def test_pinhole_rays_match_pinhole_cameras(scene, options, device):
+  with wp.ScopedDevice(device):
     _, rgb, depth, seg = _render(scene, **options)
     _, rgb_rays, dist_rays, seg_rays = _render(scene, rays=_pinhole_bundle(), **options)
   assert np.abs(_channels(rgb) - _channels(rgb_rays)).max() <= 1
@@ -153,8 +155,9 @@ def test_parallel_rays_measure_distance_from_their_origin(scene):
   np.testing.assert_allclose(depth[sphere].min(), 3.0 - 0.25 - 0.6, atol=0.02)
 
 
-def test_guides(scene):
-  with wp.ScopedDevice("cpu"):
+@pytest.mark.parametrize("device", _DEVICES)
+def test_guides(scene, device):
+  with wp.ScopedDevice(device):
     s, *_ = _render(scene, nworld=1, render_guides=True)
     w, h = _RES
     albedo = wp.zeros((1, h, w), dtype=wp.vec3)
