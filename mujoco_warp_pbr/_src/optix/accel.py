@@ -38,7 +38,7 @@ refitted or rebuilt (`Scene.build`, the OptiX calls).
 import dataclasses
 import logging
 import os
-from typing import Any, Iterable, Optional
+from typing import Any, ClassVar, Iterable, Optional
 
 import mujoco
 import numpy as np
@@ -319,7 +319,7 @@ class _Logger:
   """
 
   # OptiX levels 1 (fatal) to 4 (print).
-  _LEVELS = {1: logging.CRITICAL, 2: logging.ERROR, 3: logging.WARNING}
+  _LEVELS: ClassVar[dict[int, int]] = {1: logging.CRITICAL, 2: logging.ERROR, 3: logging.WARNING}
 
   def __init__(self):
     self.level = int(os.environ.get("MJPBR_OPTIX_LOG", "2"))

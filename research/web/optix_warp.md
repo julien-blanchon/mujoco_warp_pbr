@@ -4,8 +4,8 @@ Date: 2026-10-22.
 
 **Setup.** GH200 (sm_90, no RT cores; OptiX runs its traversal on the SMs), driver 610.57,
 OptiX 9.1 headers (github.com/NVIDIA/optix-dev), PyOptiX 9.1.0 built from
-github.com/NVIDIA/otk-pyoptix, warp-lang 1.18.0. Proof-of-concept code is in
-[`../optix_poc/`](../optix_poc/README.md).
+github.com/NVIDIA/otk-pyoptix, warp-lang 1.18.0. The proof-of-concept code (`research/optix_poc/`) was removed after commit `0ac5ed2`; it became
+`mujoco_warp_pbr/_src/optix/`.
 
 ## 1. Warp kernels as OptiX programs: works
 

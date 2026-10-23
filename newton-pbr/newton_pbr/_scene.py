@@ -24,7 +24,8 @@ be rendered without MuJoCo kinematics.
 
 import dataclasses
 import warnings
-from typing import Any, Literal, NamedTuple, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Literal, NamedTuple
 
 import mujoco
 import newton
@@ -152,9 +153,9 @@ class _ShapeMesh(NamedTuple):
 
   verts: np.ndarray
   faces: np.ndarray
-  uvs: Optional[np.ndarray]
-  normals: Optional[np.ndarray]
-  mesh: Optional[newton.Mesh]  # the Newton mesh (None for a cone)
+  uvs: np.ndarray | None
+  normals: np.ndarray | None
+  mesh: newton.Mesh | None  # the Newton mesh (None for a cone)
 
 
 def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray) -> _ShapeMesh:
@@ -174,7 +175,7 @@ def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray) 
   return _ShapeMesh(verts, faces, uvs, normals, mesh)
 
 
-def _add_texture(spec: mujoco.MjSpec, name: str, texture: Any) -> Optional[str]:
+def _add_texture(spec: mujoco.MjSpec, name: str, texture: Any) -> str | None:
   """Adds a Newton mesh texture (file path or image array) as a MuJoCo 2D texture."""
   if texture is None:
     return None
@@ -211,7 +212,7 @@ def _check_worlds(model: newton.Model, per_world: list[np.ndarray], shape_type: 
       raise ValueError(
         f"newton_pbr needs every world to have the same visible shapes: world {w} has {len(shapes)}, world 0 {len(first)}"
       )
-    for a, b in zip(first, shapes):
+    for a, b in zip(first, shapes, strict=True):
       same = shape_type[a] == shape_type[b] and np.allclose(shape_scale[a], shape_scale[b])
       if same and int(shape_type[a]) in (int(GeoType.MESH), int(GeoType.CONVEX_MESH)):
         same = _same_source(model.shape_source[a], model.shape_source[b])
@@ -223,7 +224,7 @@ def _check_worlds(model: newton.Model, per_world: list[np.ndarray], shape_type: 
 
 
 def build_scene(
-  model: newton.Model, lights: Optional[list[Light]], camera_fovy: float, headlight: Optional[Headlight] = None
+  model: newton.Model, lights: list[Light] | None, camera_fovy: float, headlight: Headlight | None = None
 ) -> SceneMapping:
   """Builds the MuJoCo appearance model of a Newton model (worlds must have identical shapes).
 

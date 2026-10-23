@@ -15,7 +15,7 @@
 
 """PBR camera sensor for Newton, mirroring `newton.sensors.SensorCamera.update`."""
 
-from typing import Any, Optional
+from typing import Any
 
 import mujoco
 import mujoco_warp as mjw
@@ -142,9 +142,9 @@ class SensorPbrCamera:
     width: int,
     height: int,
     fovy: float = 60.0,
-    lights: Optional[list[Light]] = None,
+    lights: list[Light] | None = None,
     envmap: Any = None,
-    headlight: Optional[Headlight] = None,
+    headlight: Headlight | None = None,
     **render_options: Any,
   ):
     """Builds the MuJoCo appearance model and the render context.

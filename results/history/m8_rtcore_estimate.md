@@ -61,7 +61,7 @@ Which k is realistic:
 
 - Keep the software megakernel as the default; it is the only option on Hopper and Grace-Hopper
   systems.
-- An OptiX backend is feasible (proof of concept in `research/optix_poc/`) and worth building for
+- An OptiX backend is feasible (proof of concept in `research/optix_poc/`, removed after commit `0ac5ed2`; the production backend is `mujoco_warp_pbr/_src/optix/`) and worth building for
   mesh-heavy workloads on RTX or L40 hardware: the megakernel as a Warp-authored raygen, a single
   IAS over all worlds, and `trace.make_trace` as the swap point. Measure on RT-core hardware
   before committing to it.

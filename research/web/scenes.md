@@ -1,5 +1,8 @@
 # Candidate test scenes: PBR showcases, robotics, NVIDIA demo scenes, light rigs
 
+> The USD converter (`tools/usd_to_mjcf.py`) and the Isaac scenes were removed from the repository
+> after commit `b7be027`; this note documents them as they were.
+
 Survey date: 2026-10-22. Sizes come from file listings, and the material and light contents of the
 USD scenes were parsed from their layers. Unverified items are marked.
 

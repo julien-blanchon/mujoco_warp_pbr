@@ -17,13 +17,14 @@
 
 from typing import Any
 
-import newton
 import numpy as np
 import pytest
 import warp as wp
-from newton.sensors import SensorCamera
 
-import newton_pbr
+newton = pytest.importorskip("newton")
+from newton.sensors import SensorCamera  # noqa: E402
+
+import newton_pbr  # noqa: E402
 
 _RES = 48
 _FOVY = 50.0
@@ -117,7 +118,7 @@ def test_shape_colours(rendered):
 
 
 def test_light_type_is_validated():
-  with pytest.raises(ValueError, match="Light.type"):
+  with pytest.raises(ValueError, match=r"Light\.type"):
     kind: Any = "area"
     newton_pbr.Light(kind)
 
