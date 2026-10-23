@@ -25,14 +25,26 @@ DFG_LUT_SIZE = 128
 DFG_LUT_SAMPLES = 1024
 
 
+# Bit-reversal masks as typed constants: a bare literal above INT32_MAX would first be emitted as an
+# int32 by Warp's code generator (a narrowing conversion the C++ compiler warns about).
+_MASK_1 = wp.constant(wp.uint32(0x55555555))
+_MASK_1_HI = wp.constant(wp.uint32(0xAAAAAAAA))
+_MASK_2 = wp.constant(wp.uint32(0x33333333))
+_MASK_2_HI = wp.constant(wp.uint32(0xCCCCCCCC))
+_MASK_4 = wp.constant(wp.uint32(0x0F0F0F0F))
+_MASK_4_HI = wp.constant(wp.uint32(0xF0F0F0F0))
+_MASK_8 = wp.constant(wp.uint32(0x00FF00FF))
+_MASK_8_HI = wp.constant(wp.uint32(0xFF00FF00))
+
+
 @wp.func
 def hammersley(i: int, inv_n: float) -> wp.vec2:
   bits = wp.uint32(i)
   bits = (bits << wp.uint32(16)) | (bits >> wp.uint32(16))  # pyrefly: ignore[unsupported-operation]  # stubs: no uint32 shifts
-  bits = ((bits & wp.uint32(0x55555555)) << wp.uint32(1)) | ((bits & wp.uint32(0xAAAAAAAA)) >> wp.uint32(1))
-  bits = ((bits & wp.uint32(0x33333333)) << wp.uint32(2)) | ((bits & wp.uint32(0xCCCCCCCC)) >> wp.uint32(2))
-  bits = ((bits & wp.uint32(0x0F0F0F0F)) << wp.uint32(4)) | ((bits & wp.uint32(0xF0F0F0F0)) >> wp.uint32(4))
-  bits = ((bits & wp.uint32(0x00FF00FF)) << wp.uint32(8)) | ((bits & wp.uint32(0xFF00FF00)) >> wp.uint32(8))
+  bits = ((bits & _MASK_1) << wp.uint32(1)) | ((bits & _MASK_1_HI) >> wp.uint32(1))
+  bits = ((bits & _MASK_2) << wp.uint32(2)) | ((bits & _MASK_2_HI) >> wp.uint32(2))
+  bits = ((bits & _MASK_4) << wp.uint32(4)) | ((bits & _MASK_4_HI) >> wp.uint32(4))
+  bits = ((bits & _MASK_8) << wp.uint32(8)) | ((bits & _MASK_8_HI) >> wp.uint32(8))
   return wp.vec2(float(i) * inv_n, float(bits) * wp.static(1.0 / 4294967296.0))
 
 

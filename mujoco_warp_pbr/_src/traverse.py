@@ -98,7 +98,7 @@ if AVAILABLE:
     fields={"lower": wp.vec3, "left": wp.int32, "upper": wp.vec3, "right": wp.int32, "leaf": wp.int32},
   )
   # Registered at import, so the type checker cannot see them: their call sites carry
-  # `# pyrefly: ignore[missing-attribute]`.
+  # an ignore comment for Pyrefly's missing-attribute check.
   wp.build_experimental.add_builtin(
     "mjpbr_bvh_node", {"bvh_id": wp.uint64, "index": int}, _BvhNode, native_name="mjpbr::bvh_node"
   )

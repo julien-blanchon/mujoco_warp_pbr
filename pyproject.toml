@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mujoco-warp-pbr"
-version = "0.1.0"
+version = "0.1.1"
 description = "Batched physically based renderer for MuJoCo Warp"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
@@ -37,7 +37,7 @@ Issues = "https://github.com/julien-blanchon/mujoco_warp_pbr/issues"
 typing = [
     "mujoco-stubs>=3.13",
     "pyrefly-numpy-stubs>=1.4",
-    "pyrefly-warp-stubs>=0.1",
+    "pyrefly-warp-stubs>=0.1.1",
 ]
 dev = [
     "mujoco-warp-pbr[typing]",

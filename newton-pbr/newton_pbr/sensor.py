@@ -36,6 +36,9 @@ if TYPE_CHECKING:
   from shape_extensions import IntVar
 
 _OBJ_GEOM = wp.constant(int(mujoco.mjtObj.mjOBJ_GEOM))
+# Typed constants: a bare literal above INT32_MAX would first be emitted as an int32 by Warp.
+_ALPHA_GREEN = wp.constant(wp.uint32(0xFF00FF00))
+_NO_SHAPE = wp.constant(wp.uint32(0xFFFFFFFF))
 # create_render_context options the sensor sets itself.
 _RESERVED_OPTIONS = ("nworld", "cam_res", "render_rgb", "render_hdr")
 
@@ -98,7 +101,7 @@ def _copy_outputs(
     # MuJoCo Warp packs 0xAARRGGBB, Newton 0xAABBGGRR.
     c = rgb_in[view, pixel]
     color[view, y, x] = (
-      (c & wp.uint32(0xFF00FF00)) | ((c >> wp.uint32(16)) & wp.uint32(0xFF)) | ((c & wp.uint32(0xFF)) << wp.uint32(16))  # pyrefly: ignore[unsupported-operation]  # stubs: no uint32 bit operators
+      (c & _ALPHA_GREEN) | ((c >> wp.uint32(16)) & wp.uint32(0xFF)) | ((c & wp.uint32(0xFF)) << wp.uint32(16))  # pyrefly: ignore[unsupported-operation]  # stubs: no uint32 bit operators
     )
   # Newton: negative depth for rays that hit nothing; MuJoCo Warp: 0.
   d = depth_in[view, pixel]
@@ -110,7 +113,7 @@ def _copy_outputs(
     depth[view, y, x] = wp.where(d > 0.0, d * ray_scale[y, x], d)
   if want_shape:
     s = seg_in[view, pixel]
-    index = wp.uint32(0xFFFFFFFF)
+    index = _NO_SHAPE
     if s[0] >= 0 and s[1] == _OBJ_GEOM:
       index = wp.uint32(geom_shape[view, s[0]])
     shape_index[view, y, x] = index

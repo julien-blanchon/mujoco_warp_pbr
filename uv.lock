@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "mujoco-warp-pbr"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "mujoco" },
@@ -348,7 +348,7 @@ requires-dist = [
     { name = "pygltflib", marker = "extra == 'bench'", specifier = ">=1.16.5" },
     { name = "pyrefly", marker = "extra == 'dev'", specifier = ">=1.4" },
     { name = "pyrefly-numpy-stubs", marker = "extra == 'typing'", specifier = ">=1.4" },
-    { name = "pyrefly-warp-stubs", marker = "extra == 'typing'", specifier = ">=0.1" },
+    { name = "pyrefly-warp-stubs", marker = "extra == 'typing'", specifier = ">=0.1.1" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-xdist", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
@@ -380,7 +380,7 @@ wheels = [
 
 [[package]]
 name = "newton-pbr"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "newton-pbr" }
 dependencies = [
     { name = "mujoco-warp-pbr" },
@@ -675,15 +675,15 @@ wheels = [
 
 [[package]]
 name = "pyrefly-warp-stubs"
-version = "0.1.0"
+version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyrefly-shape-extensions" },
     { name = "warp-lang" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e7/08/3de530f9c8072a7d03386e02815ee23baca26096685b643b0267d21c817a/pyrefly_warp_stubs-0.1.0.tar.gz", hash = "sha256:e01be5f7ef4fefc6378358d943d163fcdbaab3917a9e02ab3b9ab295c3bdd4b0", size = 208285, upload-time = "2026-10-23T10:57:23.168Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b9/8a/150b6b84bc5b88ffccb6171548deff6d57690a68713935d2235b25eebfb2/pyrefly_warp_stubs-0.1.1.tar.gz", hash = "sha256:64c0abbf13f4521fa214855493ec3753be3407f7ac8d62859dc9ec0086eed9fc", size = 218242, upload-time = "2026-10-23T12:46:10.833Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/c9/62c86baff99f6b50ab66d1f4e5edfd4cf6f0c6f6123138d7fa3c4496925e/pyrefly_warp_stubs-0.1.0-py3-none-any.whl", hash = "sha256:504b46f830e005e4eecf033949ad54cba93f129b95cb1b9c55b55d474664068f", size = 219858, upload-time = "2026-10-23T10:57:21.797Z" },
+    { url = "https://files.pythonhosted.org/packages/52/7f/471802611eafbca0223fe65774ef54caaca8d655fc272dbcdd25edd4b99f/pyrefly_warp_stubs-0.1.1-py3-none-any.whl", hash = "sha256:24bff6fa2c9930199655ec0c9d4ae4714261c9dc424fc23ab05d2fb2930187b4", size = 230519, upload-time = "2026-10-23T12:46:09.602Z" },
 ]
 
 [[package]]

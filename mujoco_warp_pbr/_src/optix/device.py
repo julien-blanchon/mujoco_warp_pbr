@@ -165,7 +165,7 @@ if AVAILABLE:
 _RAY = {"handle": wp.uint64, "o": wp.vec3, "d": wp.vec3, "tmin": float, "tmax": float}
 # Builtin `wp.mjpbr_optix_<name>` -> (input types, return type) of `mjpbr_optix::<name>` (preamble).
 # Registered at import, so the type checker cannot see them: their call sites carry
-# `# pyrefly: ignore[missing-attribute]`.
+# an ignore comment for Pyrefly's missing-attribute check.
 _BUILTINS: dict[str, tuple[dict, Any]] = {
   "launch_index": ({}, int),
   "trace_closest": ({**_RAY, "ray_flags": wp.uint32}, _TraceResult),
