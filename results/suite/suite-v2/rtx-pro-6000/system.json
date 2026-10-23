@@ -1,0 +1,19 @@
+{
+  "time": "2026-10-23T00:27:22+0000",
+  "platform": "Linux-6.12.103-127.188.amzn2023.x86_64-x86_64-with-glibc2.39",
+  "cpu": "x86_64",
+  "cpu_count": 192,
+  "python": "3.12.15",
+  "packages": {
+    "warp-lang": "1.18.0",
+    "mujoco": "3.17.0.dev1004626286",
+    "mujoco-warp": "3.16.0",
+    "newton": "1.7.0",
+    "mitsuba": "3.9.1",
+    "mujoco-warp-pbr": "0.0.1"
+  },
+  "gpus": [
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition, 580.178.04, 97887 MiB, 12.0"
+  ],
+  "commit": "f137f228d868057062432bec26c31dbec4b07e0f"
+}

@@ -52,6 +52,12 @@ dimension is `nworld`, e.g. `rc.geom_roughness = wp.array(r, dtype=float)` with 
 `(nworld, ngeom)`, `rc.env_id` to select one of several environment maps per world, or
 `m.geom_rgba` (MuJoCo Warp's convention: arrays are indexed with `worldid % shape[0]`).
 
+On GPUs with RT cores, `traversal="optix"` traces the real-time tier's rays with OptiX instead of
+Warp's software BVHs: 3.7–30× faster on mesh scenes. It needs PyOptiX
+([otk-pyoptix](https://github.com/NVIDIA/otk-pyoptix), built against the OptiX version of the
+driver) and the OptiX SDK headers (`OPTIX_INCLUDE_DIR`), and falls back to the software path with
+a warning otherwise; see `results/rt_backend.md` for what it supports.
+
 ## Materials and lights
 
 Only native MuJoCo fields are used, so existing MJCF works unchanged:
@@ -94,12 +100,41 @@ camera.update(state, camera_transforms, color_image=color, depth_image=depth)
 
 ## Performance
 
-On one GH200 (Hopper, no RT cores), with an HDR environment and shadows, the real-time tier
-renders the DamagedHelmet scene at ~174k frames/s (4096 worlds, 64²), 1.6× MuJoCo Warp's
-Lambert/Phong renderer. On primitive-only scenes it runs at 0.5–0.7× MuJoCo Warp's speed, where
-PBR shading outweighs traversal. Throughput saturates from about 1–4 M pixels per launch (e.g.
-256 worlds at 64²). See `results/scaling.md`, `results/m5_baseline.md` and
-`results/m7_autoresearch.md` for tables, and `results/m6_pathtrace.md` for the path-traced tier.
+Camera-frames per second, 4096 worlds at 64², one camera per world, HDR environment and shadows
+for this renderer (RTX PRO 6000 Blackwell; from `benchmarks/suite.py`, full tables for three GPUs
+and all renderers in [`results/suite/suite-v2`](results/suite/suite-v2/README.md)):
+
+| scene | real-time | real-time (OptiX) | Newton `SensorCamera` | MuJoCo Warp |
+| --- | ---: | ---: | ---: | ---: |
+| DamagedHelmet | 310k | **1.64M** | 168k | 112k |
+| ABeautifulGame (1.5M triangles) | 244k | **1.33M** | 134k | 147k |
+| ANYmal C | 176k | **932k** | 177k | 82k |
+| Franka showroom (authored lights) | 195k | **730k** | 285k | 78k |
+| material grid (spheres) | 1.85M | 1.86M | 1.95M | **2.54M** |
+| primitives | 1.21M | 653k | 1.88M | **2.08M** |
+
+- Newton's `SensorCamera` and MuJoCo Warp shade with albedo and simple lights (Newton's MJCF
+  import also drops the scenes' lights and textures); this renderer runs full PBR with
+  image-based lighting.
+- On primitive-only scenes it runs at 0.5–0.7× MuJoCo Warp's speed, where PBR shading outweighs
+  traversal.
+- Across GPUs (geometric mean over the suite's scenes, 4096 × 64²): RTX PRO 6000 309k, H200
+  141k, A100 93k frames/s.
+- Single-camera renderers for reference (frames/s, 256², DamagedHelmet): MuJoCo's OpenGL
+  renderer 4.4k, Newton's `ViewerRTX` 91, Mitsuba 3 at 16 spp 218, this renderer's path-traced
+  tier at 16 spp 82 (5.0k real-time). Batched through one tiled render product
+  (`newton_rtx_tiled`), Omniverse RTX reaches about 70k frames/s at 4096 × 64² on static scenes
+  (`research/web/ovrtx_batching.md`).
+- Throughput saturates from about 1–4 M pixels per launch (e.g. 256 worlds at 64²).
+
+![DamagedHelmet in every renderer](results/suite/suite-v2/rtx-pro-6000/gallery/damaged_helmet.png)
+
+Left to right: MuJoCo OpenGL, MuJoCo Warp, Newton `SensorCamera`, Newton `ViewerRTX`, this
+renderer's real-time tier, its path-traced tier (256 spp) and Mitsuba 3 (256 spp).
+
+See `results/scaling.md`, `results/m5_baseline.md` and `results/m7_autoresearch.md` for more
+tables, `results/m6_pathtrace.md` for the path-traced tier and `results/rt_backend.md` for the
+OptiX backend.
 
 Tuning knobs: `max_registers` (96 by default, tuned on Hopper; 0 leaves it to the compiler),
 `render_order` (`RenderOrder.TILED` default; `RenderOrder.WORLD` is up to 2.7×

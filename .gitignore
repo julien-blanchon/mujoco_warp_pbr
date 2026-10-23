@@ -7,3 +7,10 @@ __pycache__/
 .ruff_cache/
 /results/gallery/*.mp4
 /research/optix_poc/out/
+# Suite runs: keep results, reports and stills; videos, logs and frames stay local. Isaac assets
+# (and renders of them) are for local use only.
+/results/suite/**/*.mp4
+/results/suite/**/*_frames/
+/results/suite/**/log.txt
+/results/suite/**/isaac_*.png
+/results/suite/suite-v1/

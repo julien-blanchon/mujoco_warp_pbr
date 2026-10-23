@@ -19,6 +19,7 @@ python benchmarks/report.py results/suite/* > results/suite/README.md
 """
 
 import argparse
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -94,7 +95,7 @@ def _table(results: dict, context: str) -> list[str]:
   return lines
 
 
-def render(runs: list[Path], base: Path | None = None) -> str:
+def render(runs: list[Path], base: Path | None = None, gallery_exclude: tuple[str, ...] = (), video_links: bool = True) -> str:
   """The report; image / video links are relative to `base` (default: the first run)."""
   base = base or runs[0]
   out = ["# Benchmark suite", ""]
@@ -138,9 +139,11 @@ def render(runs: list[Path], base: Path | None = None) -> str:
       out += ["### Gallery", ""]
       out += ["MuJoCo GL | MuJoCo Warp | Newton | Newton RTX | PBR real-time | PBR path-traced | Mitsuba (reference).", ""]
       for still in sorted(gallery.glob("*.png")):
+        if any(fnmatch.fnmatch(still.stem, pattern) for pattern in gallery_exclude):
+          continue
         rel = os.path.relpath(still, base)
         video = still.with_suffix(".mp4")
-        link = f" ([orbit video]({os.path.relpath(video, base)}))" if video.exists() else ""
+        link = f" ([orbit video]({os.path.relpath(video, base)}))" if video_links and video.exists() else ""
         out += [f"**{still.stem}**{link}", "", f"![{still.stem}]({rel})", ""]
   return "\n".join(out)
 
@@ -149,8 +152,10 @@ def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("runs", nargs="+", type=Path)
   parser.add_argument("--base", type=Path, help="directory the report is written to (for relative links)")
+  parser.add_argument("--gallery-exclude", nargs="*", default=[], help="scene name patterns left out of the gallery")
+  parser.add_argument("--no-video-links", action="store_true", help="omit links to the orbit videos")
   args = parser.parse_args()
-  print(render(args.runs, args.base))
+  print(render(args.runs, args.base, tuple(args.gallery_exclude), not args.no_video_links))
 
 
 if __name__ == "__main__":

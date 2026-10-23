@@ -1,0 +1,19 @@
+{
+  "time": "2026-10-22T23:47:58+0000",
+  "platform": "Linux-6.12.105+-x86_64-with-glibc2.39",
+  "cpu": "x86_64",
+  "cpu_count": 224,
+  "python": "3.12.15",
+  "packages": {
+    "warp-lang": "1.18.0",
+    "mujoco": "3.17.0.dev1004626286",
+    "mujoco-warp": "3.16.0",
+    "newton": "1.7.0",
+    "mitsuba": "3.9.1",
+    "mujoco-warp-pbr": "0.0.1"
+  },
+  "gpus": [
+    "NVIDIA H200, 580.178.04, 143771 MiB, 9.0"
+  ],
+  "commit": "e7ce6c3a774d849efab15fd6e582d7d50b4af194"
+}
