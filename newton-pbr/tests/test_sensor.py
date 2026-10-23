@@ -53,9 +53,10 @@ def _scene(nworld: int = 2) -> tuple[newton.Model, newton.State, wp.array]:
   state.body_q.assign(q)
   # Camera at (0, -3, 1.2) looking at the origin: -Z forward, +Y up.
   eye = np.array([0.0, -3.0, 1.2])
-  forward = -eye / np.linalg.norm(eye)
+  # numpy stubs: norm returns a bare `floating`, which no array operator accepts.
+  forward = -eye / np.linalg.norm(eye)  # pyrefly: ignore[unsupported-operation]
   right = np.cross(forward, [0.0, 0.0, 1.0])
-  right /= np.linalg.norm(right)
+  right /= np.linalg.norm(right)  # pyrefly: ignore[unsupported-operation]
   up = np.cross(right, forward)
   rot = np.stack([right, up, -forward], axis=1).astype(np.float32)
   cam = wp.transformf(wp.vec3f(*eye), wp.quat_from_matrix(wp.mat33f(rot.flatten())))

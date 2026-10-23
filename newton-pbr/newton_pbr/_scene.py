@@ -22,14 +22,16 @@ Newton's body transforms every frame, so any Newton scene (USD, URDF, MJCF or bu
 be rendered without MuJoCo kinematics.
 """
 
+from __future__ import annotations
+
 import dataclasses
 import warnings
-from collections.abc import Sequence
 from typing import Any, Literal, NamedTuple
 
 import mujoco
 import newton
 import numpy as np
+import numpy.typing as npt
 from newton import GeoType
 
 # Shape types rendered as MuJoCo primitives; meshes, convex meshes, cones and height fields
@@ -57,7 +59,7 @@ _LIGHT_TYPES: dict[str, Any] = {
 }
 
 # (ambient, diffuse, specular) RGB of MuJoCo's headlight.
-Headlight = tuple[Sequence[float], Sequence[float], Sequence[float]]
+Headlight = tuple[npt.ArrayLike, npt.ArrayLike, npt.ArrayLike]
 
 
 def srgb_to_linear(c: Any) -> np.ndarray:
@@ -143,22 +145,22 @@ class SceneMapping:
   """
 
   mjm: mujoco.MjModel
-  geom_shape: np.ndarray
-  geom_offset_pos: np.ndarray
-  geom_offset_quat: np.ndarray
+  geom_shape: np.ndarray[[int, int], np.dtype[np.int32]]
+  geom_offset_pos: np.ndarray[[int, 3], np.dtype[np.float64]]
+  geom_offset_quat: np.ndarray[[int, 4], np.dtype[np.float64]]
 
 
 class _ShapeMesh(NamedTuple):
   """Triangle mesh of a mesh-like shape (scaled)."""
 
-  verts: np.ndarray
-  faces: np.ndarray
-  uvs: np.ndarray | None
-  normals: np.ndarray | None
+  verts: np.ndarray[[int, 3], np.dtype[np.float64]]
+  faces: np.ndarray[[int, 3], np.dtype[np.int64]]
+  uvs: np.ndarray[[int, 2], np.dtype[np.float64]] | None
+  normals: np.ndarray[[int, 3], np.dtype[np.float64]] | None
   mesh: newton.Mesh | None  # the Newton mesh (None for a cone)
 
 
-def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray) -> _ShapeMesh:
+def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray[[3], np.dtype[np.float64]]) -> _ShapeMesh:
   if gtype == int(GeoType.CONE):
     radius, half_height = float(scale[0]), float(scale[1])
     n = _CONE_SEGMENTS
@@ -204,7 +206,12 @@ def _same_source(a: Any, b: Any) -> bool:
   )
 
 
-def _check_worlds(model: newton.Model, per_world: list[np.ndarray], shape_type: np.ndarray, shape_scale: np.ndarray):
+def _check_worlds(
+  model: newton.Model,
+  per_world: list[np.ndarray[[int], np.dtype[np.intp]]],
+  shape_type: np.ndarray[[int], np.dtype[np.int32]],
+  shape_scale: np.ndarray[[int, 3], np.dtype[np.float32]],
+) -> None:
   """Raises unless every world has the same visible shapes as world 0 (type, size, mesh)."""
   first = per_world[0]
   for w, shapes in enumerate(per_world[1:], start=1):
@@ -253,11 +260,12 @@ def build_scene(
   spec = mujoco.MjSpec()
   spec.visual.headlight.active = int(headlight is not None)
   if headlight is not None:
-    spec.visual.headlight.ambient, spec.visual.headlight.diffuse, spec.visual.headlight.specular = headlight
+    ambient, diffuse, specular = (np.asarray(c, dtype=np.float32) for c in headlight)
+    spec.visual.headlight.ambient, spec.visual.headlight.diffuse, spec.visual.headlight.specular = ambient, diffuse, specular
   spec.compiler.texturedir = ""
   # One MuJoCo mesh per (Newton mesh, scale): shapes sharing a mesh share it.
   mesh_names: dict[tuple, str] = {}
-  for i, shape in enumerate(shapes0):
+  for i, shape in enumerate(shapes0.tolist()):
     gtype = int(shape_type[shape])
     scale = shape_scale[shape].astype(np.float64)
     color = srgb_to_linear(shape_color[shape] if shape_color is not None else _DEFAULT_COLOR)
@@ -268,7 +276,8 @@ def build_scene(
       geom.type = _PRIMITIVES[gtype]
       if gtype == int(GeoType.PLANE):
         # Newton's width / length are full extents (0: infinite), MuJoCo's plane size is half.
-        geom.size = [0.5 * scale[0], 0.5 * scale[1], 0.1]
+        # mujoco-stubs: the MjSpec array setters are ndarray-only; pybind takes any sequence.
+        geom.size = [0.5 * scale[0], 0.5 * scale[1], 0.1]  # pyrefly: ignore[bad-argument-type]
       else:
         geom.size = scale
     else:
@@ -299,8 +308,9 @@ def build_scene(
         tex = _add_texture(spec, f"tex{i}", source.texture) if uvs is not None else None
         if tex is not None:
           mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = tex
-          mat.rgba = [1.0, 1.0, 1.0, alpha]
-          geom.rgba = [1.0, 1.0, 1.0, alpha]
+          # mujoco-stubs: the MjSpec array setters are ndarray-only; pybind takes any sequence.
+          mat.rgba = [1.0, 1.0, 1.0, alpha]  # pyrefly: ignore[bad-argument-type]
+          geom.rgba = [1.0, 1.0, 1.0, alpha]  # pyrefly: ignore[bad-argument-type]
     geom.material = f"mat{i}"
 
   for i, light in enumerate(lights if lights is not None else []):

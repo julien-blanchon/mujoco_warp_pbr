@@ -15,7 +15,9 @@
 
 """PBR camera sensor for Newton, mirroring `newton.sensors.SensorCamera.update`."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import mujoco
 import mujoco_warp as mjw
@@ -29,6 +31,10 @@ from newton_pbr._scene import Light
 from newton_pbr._scene import build_scene
 from newton_pbr._scene import default_lights
 
+if TYPE_CHECKING:
+  from shape_extensions import Int
+  from shape_extensions import IntVar
+
 _OBJ_GEOM = wp.constant(int(mujoco.mjtObj.mjOBJ_GEOM))
 # create_render_context options the sensor sets itself.
 _RESERVED_OPTIONS = ("nworld", "cam_res", "render_rgb", "render_hdr")
@@ -36,13 +42,13 @@ _RESERVED_OPTIONS = ("nworld", "cam_res", "render_rgb", "render_hdr")
 
 @wp.kernel(enable_backward=False)
 def _sync_poses(
-  body_q: wp.array[wp.transformf],
-  shape_body: wp.array[wp.int32],
-  shape_transform: wp.array[wp.transformf],
+  body_q: wp.array1d[wp.transformf],
+  shape_body: wp.array1d[wp.int32],
+  shape_transform: wp.array1d[wp.transformf],
   geom_shape: wp.array2d[wp.int32],
-  offset_pos: wp.array[wp.vec3],
-  offset_quat: wp.array[wp.quat],
-  camera_transforms: wp.array[wp.transformf],
+  offset_pos: wp.array1d[wp.vec3],
+  offset_quat: wp.array1d[wp.quat],
+  camera_transforms: wp.array1d[wp.transformf],
   geom_xpos: wp.array2d[wp.vec3],
   geom_xmat: wp.array2d[wp.mat33],
   cam_xpos: wp.array2d[wp.vec3],
@@ -92,7 +98,7 @@ def _copy_outputs(
     # MuJoCo Warp packs 0xAARRGGBB, Newton 0xAABBGGRR.
     c = rgb_in[view, pixel]
     color[view, y, x] = (
-      (c & wp.uint32(0xFF00FF00)) | ((c >> wp.uint32(16)) & wp.uint32(0xFF)) | ((c & wp.uint32(0xFF)) << wp.uint32(16))
+      (c & wp.uint32(0xFF00FF00)) | ((c >> wp.uint32(16)) & wp.uint32(0xFF)) | ((c & wp.uint32(0xFF)) << wp.uint32(16))  # pyrefly: ignore[unsupported-operation]  # stubs: no uint32 bit operators
     )
   # Newton: negative depth for rays that hit nothing; MuJoCo Warp: 0.
   d = depth_in[view, pixel]
@@ -112,7 +118,7 @@ def _copy_outputs(
     hdr[view, y, x] = hdr_in[view, pixel]
 
 
-class SensorPbrCamera:
+class SensorPbrCamera[H: IntVar, W: IntVar]:
   """Physically based camera sensor for a Newton model, rendered by mujoco_warp_pbr.
 
   The interface follows :class:`newton.sensors.SensorCamera`: one view per world, camera
@@ -131,16 +137,23 @@ class SensorPbrCamera:
       camera = SensorPbrCamera(model, width=128, height=128, fovy=60.0, envmap="studio.hdr")
       color = camera.allocate_image_color()
       camera.update(state, camera_transforms, color_image=color)
+
+  Images are typed (world_count, H, W) with H, W bound from `height` / `width`, so an image of
+  another size is a type error at the `update` call.
   """
 
   Light = Light
+
+  width: Int[W]
+  height: Int[H]
+  nworld: int
 
   def __init__(
     self,
     model: newton.Model,
     *,
-    width: int,
-    height: int,
+    width: Int[W],
+    height: Int[H],
     fovy: float = 60.0,
     lights: list[Light] | None = None,
     envmap: Any = None,
@@ -205,32 +218,32 @@ class SensorPbrCamera:
     scale = np.sqrt(1.0 + xs[None, :] ** 2 + ys[:, None] ** 2)
     self._ray_scale = wp.array(scale.astype(np.float32), dtype=float, device=device)
 
-  def allocate_image_color(self) -> wp.array3d[wp.uint32]:
+  def allocate_image_color(self) -> wp.array[wp.uint32, [int, H, W]]:
     """Packed RGBA colour image (Newton layout), shape (world_count, height, width)."""
     return wp.zeros((self.nworld, self.height, self.width), dtype=wp.uint32, device=self.model.device)
 
-  def allocate_image_depth(self) -> wp.array3d[wp.float32]:
+  def allocate_image_depth(self) -> wp.array[wp.float32, [int, H, W]]:
     """Depth image [m], -1 where nothing is hit, shape (world_count, height, width)."""
     return wp.zeros((self.nworld, self.height, self.width), dtype=wp.float32, device=self.model.device)
 
-  def allocate_image_shape_index(self) -> wp.array3d[wp.uint32]:
+  def allocate_image_shape_index(self) -> wp.array[wp.uint32, [int, H, W]]:
     """Shape-index image, 0xFFFFFFFF where nothing is hit, shape (world_count, height, width)."""
     return wp.zeros((self.nworld, self.height, self.width), dtype=wp.uint32, device=self.model.device)
 
-  def allocate_image_color_hdr(self) -> wp.array3d[wp.vec3f]:
+  def allocate_image_color_hdr(self) -> wp.array[wp.vec3f, [int, H, W]]:
     """Linear HDR radiance image (before exposure), shape (world_count, height, width)."""
     return wp.zeros((self.nworld, self.height, self.width), dtype=wp.vec3f, device=self.model.device)
 
   def update(
     self,
     state: newton.State,
-    camera_transforms: wp.array[wp.transformf],
+    camera_transforms: wp.array1d[wp.transformf],
     *,
-    color_image: wp.array3d[wp.uint32] | None = None,
-    depth_image: wp.array3d[wp.float32] | None = None,
-    forward_depth_image: wp.array3d[wp.float32] | None = None,
-    shape_index_image: wp.array3d[wp.uint32] | None = None,
-    hdr_color_image: wp.array3d[wp.vec3f] | None = None,
+    color_image: wp.array[wp.uint32, [int, H, W]] | None = None,
+    depth_image: wp.array[wp.float32, [int, H, W]] | None = None,
+    forward_depth_image: wp.array[wp.float32, [int, H, W]] | None = None,
+    shape_index_image: wp.array[wp.uint32, [int, H, W]] | None = None,
+    hdr_color_image: wp.array[wp.vec3f, [int, H, W]] | None = None,
     seed: int = 0,
   ) -> None:
     """Renders view i = world i from camera_transforms[i] (shape (world_count,)).
@@ -297,7 +310,7 @@ class SensorPbrCamera:
       ],
     )
 
-  def _check_image(self, name: str, image: Any, dtype: Any):
+  def _check_image(self, name: str, image: wp.array3d[Any], dtype: Any) -> None:
     shape = (self.nworld, self.height, self.width)
     if tuple(image.shape) != shape or image.dtype != dtype or image.device != self.model.device:
       raise ValueError(
