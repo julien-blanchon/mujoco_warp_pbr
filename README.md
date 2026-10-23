@@ -20,7 +20,7 @@ fields.
 
 ```bash
 pip install mujoco-warp-pbr          # Python >= 3.12; pulls mujoco, mujoco-warp and warp-lang
-pip install newton-pbr               # optional: the Newton camera sensor
+pip install newton-pbr               # optional: Newton camera sensor and viewer
 pip install "mujoco-warp-pbr[typing]"  # optional: shape-aware type stubs for Pyrefly
 ```
 
@@ -60,6 +60,18 @@ dimension is `nworld`, e.g. `rc.geom_roughness = wp.array(r, dtype=float)` with 
 `(nworld, ngeom)`, `rc.env_id` to select one of several environment maps per world, or
 `m.geom_rgba` (MuJoCo Warp's convention: arrays are indexed with `worldid % shape[0]`).
 
+Camera rays: by default each camera is a pinhole (MuJoCo's `fovy` / intrinsics). Pass per-pixel
+camera-frame rays instead (distorted or fisheye lenses, any projection) with
+`create_render_context(..., camera_rays=rays)` or `mjpbr.set_camera_rays(rc, rays)`: one
+`(height, width, 2)` vec3 array per rendering camera, origins in `[..., 0]` and directions in
+`[..., 1]` (-z forward, +y up, the layout of Newton's `camera_rays`). Both tiers and the OptiX
+traversal use them; supersampling and the path tracer's sub-pixel jitter interpolate between
+neighbouring rays (exactly for pinhole bundles) and texture filtering estimates the pixel
+footprint from them. With rays, depth is the distance along each ray. The mode is compiled in:
+the kernels of pinhole cameras do not contain it and render bit-identically. `render_guides=True`
+also writes each pixel's first-hit base colour and world-space normal (`get_albedo` /
+`get_normal`).
+
 On GPUs with RT cores, `traversal="optix"` traces the real-time tier's rays with OptiX instead of
 Warp's software BVHs: 3–7× faster on mesh scenes, at most 1.3× on primitive-only scenes (and
 slower with a mirror floor); `traversal="auto"` picks OptiX only when meshes are rendered. It needs
@@ -96,14 +108,25 @@ unlit compositing (a warning is printed for both).
 ## Newton
 
 [`newton-pbr/`](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/newton-pbr/README.md) is a small package depending on this one and on
-[Newton](https://github.com/newton-physics/newton). Its `newton_pbr.SensorPbrCamera` mirrors
-`newton.sensors.SensorCamera.update`, so any Newton scene renders with this renderer, batched over
-all worlds:
+[Newton](https://github.com/newton-physics/newton). It provides drop-in replacements for Newton's
+camera sensor and GL viewer: switch with one import or one constructor.
 
 ```python
-camera = newton_pbr.SensorPbrCamera(model, width=128, height=128, fovy=60.0, envmap="studio.hdr")
-camera.update(state, camera_transforms, color_image=color, depth_image=depth)
+from newton_pbr import SensorCamera  # instead of: from newton.sensors import SensorCamera
+
+camera = SensorCamera(model, envmap="studio.hdr")  # Newton's constructor, plus PBR options
+rays = SensorCamera.compute_camera_rays_pinhole(640, 480, camera_fov=1.0)  # or OpenCV / fisheye
+color = camera.allocate_image_color(view_count, 640, 480)
+camera.update(state, camera_transforms, rays, color_image=color)  # Newton's update()
+
+viewer = newton_pbr.ViewerPbr()  # instead of: newton.viewer.ViewerGL()
 ```
+
+`SensorCamera` keeps Newton's outputs (colour, ray / forward depth, shape index, normal, albedo,
+HDR), view-to-world mapping, clear values and render settings; `ViewerPbr` keeps ViewerGL's window,
+UI and camera controls and renders the main view (or, headless, `get_frame()`) with this
+renderer. See the package README for what differs from Newton (deformables, particles and
+Gaussians are not rendered).
 
 ## Performance
 

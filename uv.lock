@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "mujoco-warp-pbr"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "mujoco" },
@@ -380,7 +380,7 @@ wheels = [
 
 [[package]]
 name = "newton-pbr"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "newton-pbr" }
 dependencies = [
     { name = "mujoco-warp-pbr" },

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newton-pbr"
-version = "0.1.1"
+version = "0.2.0"
 description = "Physically based camera sensor for Newton, rendered by mujoco_warp_pbr"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
@@ -21,7 +21,7 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "mujoco-warp-pbr>=0.1.0",
+    "mujoco-warp-pbr>=0.2.0",
     "newton>=1.7",
 ]
 
