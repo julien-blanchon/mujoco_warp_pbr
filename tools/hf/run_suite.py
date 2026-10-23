@@ -74,6 +74,7 @@ def launch(bucket: str, flavor: str, run: str, image: str, timeout: str, suite_a
   out = f"/data/results/{run}/{flavor}"
   script = (
     "set -eo pipefail; sh /data/code/tools/hf/bootstrap.sh; export PATH=$HOME/.local/bin:$PATH; cd /work/code; "
+    "[ -d /work/optix-dev/include ] && export OPTIX_INCLUDE_DIR=/work/optix-dev/include; "
     f"mkdir -p {out}; uv run python benchmarks/suite.py --out {out} {suite_args} 2>&1 | tee {out}/log.txt"
   )
   job = run_job(

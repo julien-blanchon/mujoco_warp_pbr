@@ -25,6 +25,7 @@ from pathlib import Path
 
 RENDERER_NAMES = {
   "pbr": "PBR real-time",
+  "pbr_optix": "PBR real-time (OptiX)",
   "pbr_path": "PBR path (16 spp)",
   "newton_pbr": "PBR via Newton",
   "newton": "Newton",

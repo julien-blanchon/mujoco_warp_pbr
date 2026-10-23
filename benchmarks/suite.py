@@ -66,6 +66,7 @@ CONTEXTS = {"single": (1, 256), "batch_64": (4096, 64), "batch_128": (1024, 128)
 _SEQUENTIAL = ["--iters", "2", "--repeats", "3", "--sequential-frames", "8"]
 RENDERERS = {
   "pbr": ["--renderer", "pbr"],
+  "pbr_optix": ["--renderer", "pbr", "--set", "traversal=optix"],
   "pbr_path": ["--renderer", "pbr", "--set", "tier=1", "--set", "path_samples=16", "--set", "denoise=true"],
   "newton_pbr": ["--renderer", "newton_pbr"],
   "newton": ["--renderer", "newton"],
@@ -75,7 +76,7 @@ RENDERERS = {
   "mitsuba": ["--renderer", "mitsuba", "--mitsuba-spp", "16", *_SEQUENTIAL],
 }
 # Renderers lit by the scene's HDR environment (the others only see the scene's own lights).
-_ENV_RENDERERS = {"pbr", "pbr_path", "newton_pbr", "mitsuba"}
+_ENV_RENDERERS = {"pbr", "pbr_optix", "pbr_path", "newton_pbr", "mitsuba"}
 # Newton's MJCF import of these scenes takes minutes (mesh processing of >1M triangles): its two
 # renderers are measured in batch_64 only.
 SLOW_NEWTON_IMPORT = {"a_beautiful_game"}

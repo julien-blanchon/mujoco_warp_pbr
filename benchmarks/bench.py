@@ -154,6 +154,8 @@ def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
   extra = {k: _parse_value(v) for k, v in extra.items()}
   if args.renderer == "pbr":
     rc = mjpbr.create_render_context(mjm, **(common | extra))
+    if extra.get("traversal") == "optix" and rc.traversal != "optix":
+      raise SystemExit("traversal='optix' requested but unavailable here (fell back to software)")
     base = rc.base
 
     def render():
