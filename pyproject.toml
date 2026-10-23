@@ -144,6 +144,8 @@ ignore-missing-imports = [
   "ovrtx",
   "huggingface_hub",
 ]
+# usd-core ships incomplete stubs for its C++ bindings (pxr.Sdf / Gf / UsdGeom members are missing).
+replace-imports-with-any = ["pxr", "pxr.*"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]

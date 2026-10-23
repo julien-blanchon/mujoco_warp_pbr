@@ -23,10 +23,11 @@ the viewer's position / pitch / yaw (Z-up, no roll) and field of view.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import mujoco
 import numpy as np
+import warp as wp
 
 from references.newton_camera import newton_scene
 
@@ -35,7 +36,9 @@ if TYPE_CHECKING:
 
 
 class NewtonRtxCamera:
-  def __init__(self, spec: mujoco.MjSpec, mjm: mujoco.MjModel, res: int, environment: str = "studio"):
+  def __init__(
+    self, spec: mujoco.MjSpec, mjm: mujoco.MjModel, res: int, environment: Literal["default", "none", "studio"] = "studio"
+  ):
     from newton.viewer import ViewerRTX
 
     self.model, self.state, _, fovy = newton_scene(spec, mjm, 1)
@@ -54,7 +57,7 @@ class NewtonRtxCamera:
     forward = -self.mjd.cam_xmat[self.cam].reshape(3, 3)[:, 2]
     pitch = float(np.degrees(np.arcsin(np.clip(forward[2], -1.0, 1.0))))
     yaw = float(np.degrees(np.arctan2(forward[1], forward[0])))
-    self.viewer.set_camera(self.mjd.cam_xpos[self.cam].copy(), pitch=pitch, yaw=yaw)
+    self.viewer.set_camera(wp.vec3(*self.mjd.cam_xpos[self.cam]), pitch=pitch, yaw=yaw)
 
   def render(self):
     self.time += 1.0 / 60.0

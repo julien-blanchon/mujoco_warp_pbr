@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import mujoco
 import numpy as np
@@ -201,7 +201,7 @@ class OvrtxTiledCamera:
     minimal_mode: int = 3,
     shadows: bool = True,
     layout: str = "tiled",
-    environment: str = "studio",
+    environment: Literal["default", "none", "studio"] = "studio",
     pipelined: bool = False,
     shift=(0.0, 0.0, 0.0),
   ):
@@ -244,9 +244,15 @@ class OvrtxTiledCamera:
       kwargs["ordinal"] = self.viewer._ovstage_ordinal
     return kwargs
 
+  def _renderer(self) -> Any:
+    """The viewer's ovrtx renderer (set once the viewer has a model)."""
+    renderer = self.viewer._rtx
+    assert renderer is not None, "ViewerRTX has no renderer yet"
+    return renderer
+
   def step(self):
     """RTX step of every camera (blocks until rendered); returns the render products."""
-    return self.viewer._rtx.step(**self._step_kwargs())
+    return self._renderer().step(**self._step_kwargs())
 
   def readback(self, products):
     """Maps the LdrColor outputs and splits them into `self.rgb` (nworld, res, res, 3)."""
@@ -256,6 +262,7 @@ class OvrtxTiledCamera:
     for path in self.viewer.tile_products:
       frame = products[path].frames[0]
       var = self.viewer._get_ldr_color_render_var(frame)
+      assert var is not None, f"no LdrColor output for {path}"
       mapping = var.map(device=self._device_cuda, sync_stream=handle)
       try:
         atlas = wp.from_dlpack(mapping, dtype=wp.vec4ub)
@@ -275,7 +282,7 @@ class OvrtxTiledCamera:
     if not self.pipelined:
       self.readback(self.step())
       return
-    op = self.viewer._rtx.step_async(**self._step_kwargs())
+    op = self._renderer().step_async(**self._step_kwargs())
     previous, self._pending = self._pending, op
     if previous is not None:
       self.readback(previous.wait().fetch())

@@ -175,8 +175,10 @@ class Gallery:
       t = wp.transformf(wp.vec3f(*self.mjd.cam_xpos[self.cam]), wp.quat_from_matrix(wp.mat33f(rot.flatten())))
       self.newton.cameras.assign(np.array([[t[i] for i in range(7)]], dtype=np.float32))
       self.newton.render()
-      c = self.newton.color.numpy()[0]
-      out["newton"] = np.stack([(c >> s) & 0xFF for s in (0, 8, 16)], axis=-1).astype(np.float32) / 255.0
+      c = np.asarray(self.newton.color.numpy()[0], dtype=np.uint32)  # packed RGBA8
+      out["newton"] = (
+        np.stack([np.bitwise_and(np.right_shift(c, s), 0xFF) for s in (0, 8, 16)], axis=-1).astype(np.float32) / 255.0
+      )
     if self.rtx is not None:
       _orbit(self.rtx.mjm, self.cam, self.pos0, self.quat0, angle)
       self.rtx.update_camera()

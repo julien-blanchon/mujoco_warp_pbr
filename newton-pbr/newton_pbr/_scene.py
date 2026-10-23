@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import mujoco
 import newton
@@ -160,6 +160,13 @@ class _ShapeMesh(NamedTuple):
   mesh: newton.Mesh | None  # the Newton mesh (None for a cone)
 
 
+def _required[T](value: T | None, name: str) -> T:
+  """A Newton model array that a finalized model always has (typed optional by Newton)."""
+  if value is None:
+    raise ValueError(f"newton_pbr: the Newton model has no {name}; pass a finalized newton.Model")
+  return value
+
+
 def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray[[3], np.dtype[np.float64]]) -> _ShapeMesh:
   if gtype == int(GeoType.CONE):
     radius, half_height = float(scale[0]), float(scale[1])
@@ -170,6 +177,8 @@ def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray[[
     faces = [[i, (i + 1) % n, n] for i in range(n)] + [[(i + 1) % n, i, n + 1] for i in range(n)]
     return _ShapeMesh(verts, np.asarray(faces), None, None, None)
   mesh = model.shape_source[shape]
+  if not isinstance(mesh, newton.Mesh):
+    raise TypeError(f"newton_pbr: mesh shape {shape} has no newton.Mesh source (got {type(mesh).__name__})")
   verts = np.asarray(mesh.vertices, dtype=np.float64) * scale
   faces = np.asarray(mesh.indices, dtype=np.int64).reshape(-1, 3)
   uvs = None if mesh.uvs is None else np.asarray(mesh.uvs, dtype=np.float64)
@@ -237,12 +246,14 @@ def build_scene(
 
   headlight: None (off) or (ambient, diffuse, specular) RGB triples of MuJoCo's headlight.
   """
-  shape_world = model.shape_world.numpy()
-  shape_type = model.shape_type.numpy()
-  shape_scale = model.shape_scale.numpy()
-  shape_flags = model.shape_flags.numpy()
+  shape_world = _required(model.shape_world, "shape_world").numpy()
+  # wp.array.numpy() is untyped in the stubs; Newton stores shape types as int32 and scales as vec3.
+  shape_type = cast("np.ndarray[[int], np.dtype[np.int32]]", _required(model.shape_type, "shape_type").numpy())
+  shape_scale = cast("np.ndarray[[int, 3], np.dtype[np.float32]]", _required(model.shape_scale, "shape_scale").numpy())
+  shape_flags = _required(model.shape_flags, "shape_flags").numpy()
   shape_color = model.shape_color.numpy() if model.shape_color is not None else None
-  shape_opacity = model.shape_opacity.numpy() if getattr(model, "shape_opacity", None) is not None else None
+  opacity = getattr(model, "shape_opacity", None)
+  shape_opacity = opacity.numpy() if opacity is not None else None
   nworld = max(int(model.world_count), 1)
 
   visible = (shape_flags & int(newton.ShapeFlags.VISIBLE)) != 0

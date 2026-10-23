@@ -42,6 +42,9 @@ def newton_scene(spec: mujoco.MjSpec, mjm: mujoco.MjModel, nworld: int) -> tuple
   scene.replicate(world, nworld)
   model = scene.finalize()
   # Newton's MJCF importer marks planes collision-only; show them like the other renderers do.
+  # Arrays a finalized model always has (typed optional by Newton).
+  assert model.shape_flags is not None and model.shape_type is not None
+  assert model.joint_q is not None and model.joint_qd is not None
   flags = model.shape_flags.numpy()
   planes = model.shape_type.numpy() == int(newton.GeoType.PLANE)
   flags[planes] |= int(newton.ShapeFlags.VISIBLE)

@@ -1,8 +1,9 @@
 # Builds mujoco-warp-pbr and newton-pbr and publishes them to PyPI when a v* tag is pushed, or by
 # hand for an existing tag (workflow_dispatch, e.g. to finish a partly failed release).
 # Uses PyPI trusted publishing: no token is stored; each project trusts this workflow and the
-# `pypi` environment (https://docs.pypi.org/trusted-publishers/). Each package is published by its
-# own job: one token exchange can only turn one pending publisher into a project.
+# GitHub environment named in the matrix (https://docs.pypi.org/trusted-publishers/): `pypi` for
+# mujoco-warp-pbr, `pypi-newton-pbr` for newton-pbr. Separate environments let PyPI tell the two
+# projects apart, since both trust the same repository and workflow.
 name: Release
 
 on:
@@ -39,13 +40,17 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: ${{ matrix.environment }}
     permissions:
       id-token: write
     strategy:
       max-parallel: 1
       matrix:
-        package: [mujoco-warp-pbr, newton-pbr]
+        include:
+          - package: mujoco-warp-pbr
+            environment: pypi
+          - package: newton-pbr
+            environment: pypi-newton-pbr
     steps:
       - uses: actions/download-artifact@v4
         with:
