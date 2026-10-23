@@ -15,6 +15,8 @@
 
 """Tests for tools/gltf_to_mjcf.py on a synthetic glTF quad."""
 
+from __future__ import annotations
+
 import io
 from pathlib import Path
 
@@ -103,16 +105,18 @@ def test_material_layers_and_factors(tmp_path):
   assert m.nmat == 1
   np.testing.assert_allclose(m.mat_metallic, [0.25])
   np.testing.assert_allclose(m.mat_roughness, [0.75])
+  # mujoco-stubs: model arrays have no rank (m.tex_width[i] is not a scalar) and the enums are not
+  # accepted as numpy indices.
   roles = mujoco.mjtTextureRole
   texid = m.mat_texid[0]
   for role in (roles.mjTEXROLE_RGB, roles.mjTEXROLE_NORMAL, roles.mjTEXROLE_ORM):
-    assert texid[role] >= 0
-  assert texid[roles.mjTEXROLE_EMISSIVE] == -1
+    assert texid[role] >= 0  # pyrefly: ignore[bad-index]
+  assert texid[roles.mjTEXROLE_EMISSIVE] == -1  # pyrefly: ignore[bad-index]
 
   # ORM packs occlusion (R) with glTF metallicRoughness green/blue.
-  orm = texid[roles.mjTEXROLE_ORM]
+  orm = texid[roles.mjTEXROLE_ORM]  # pyrefly: ignore[bad-index]
   adr, w, h, c = m.tex_adr[orm], m.tex_width[orm], m.tex_height[orm], m.tex_nchannel[orm]
-  texel = m.tex_data[adr : adr + w * h * c].reshape(h, w, c)[0, 0]
+  texel = m.tex_data[adr : adr + w * h * c].reshape(h, w, c)[0, 0]  # pyrefly: ignore[bad-argument-type]
   np.testing.assert_array_equal(texel[:3], [50, 100, 200])
 
 
