@@ -208,6 +208,15 @@ uv sync --all-extras
 uv run pytest
 uv run pytest -m "not slow"   # skips the high-sample path-traced references
 uv run ruff check . && uv run ruff format --check .   # or: pre-commit install
+uv run pyrefly check
 ```
+
+**Type checking.** [Pyrefly](https://pyrefly.org/en/docs/tensor-shapes/) is the type checker. The `dev` extra
+pulls in Pyrefly and the `typing` extra (`pip install mujoco-warp-pbr[typing]`): shape-aware stubs for Warp
+(`pyrefly-warp-stubs`) and NumPy (`pyrefly-numpy-stubs`), and `mujoco-stubs`. Host code annotates array shapes
+with named dimensions, e.g. `wp.array[wp.vec3, [NWorld, H, W]]` or `np.ndarray[[H, W, 3], np.dtype[np.float32]]`,
+so image sizes, batch and channel counts are checked across calls; kernel signatures stay plain Warp
+(`wp.array2d[float]`). The annotations are type-checking-only (`from __future__ import annotations`), so a plain
+install needs neither Pyrefly nor the stubs.
 
 Design notes and literature: [`research/`](research/README.md).

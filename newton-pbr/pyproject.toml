@@ -9,7 +9,7 @@ description = "Physically based camera sensor for Newton, rendered by mujoco_war
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
 authors = [{name = "Julien Blanchon"}]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "mujoco-warp-pbr",
     "newton>=1.7",
