@@ -149,7 +149,7 @@ def _rebuild_mesh_bvhs(mjm: mujoco.MjModel, base: mjw.RenderContext, constructor
   The replaced BVHs are dropped from `base.mesh_registry`. Meshes in `skip` keep theirs: they are
   traced through re-framed copies (see `_mesh_bvh_frames`).
   """
-  ids = base.mesh_bvh_id.numpy()
+  ids = base.mesh_bvh_id.numpy().copy()  # numpy() is a view of CPU arrays
   for mesh_id in range(mjm.nmesh):
     if mesh_id in skip:
       continue
@@ -174,7 +174,7 @@ def _mesh_bvh_frames(
     frames[mesh_id] = rot
   if traversal != "software":
     return {"mesh_bvh_frame": wp.array(frames, dtype=wp.mat33)}
-  ids = base.mesh_bvh_id.numpy()
+  ids = base.mesh_bvh_id.numpy().copy()  # numpy() is a view of CPU arrays
   registry = []
   for mesh_id, (_, framed, faces) in selected.items():
     mesh = wp.Mesh(
