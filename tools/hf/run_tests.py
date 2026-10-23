@@ -41,7 +41,7 @@ from run_suite import sync_code
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--bucket", required=True, help="Hugging Face bucket id, e.g. user/mujoco-warp-pbr")
-  parser.add_argument("--flavor", default="l40sx1")
+  parser.add_argument("--flavor", default="rtx-pro-6000")
   parser.add_argument("--tag", default="tests", help="code directory suffix in the bucket")
   parser.add_argument("--timeout", default="45m")
   parser.add_argument("--image", default=IMAGE)

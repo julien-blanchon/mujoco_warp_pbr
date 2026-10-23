@@ -29,7 +29,7 @@ results straight into the bucket. Jobs are billed per minute while they run; --t
 each one. With --wait, the script polls until every job ends, downloads the results to
 results/suite/<run>/ and writes a combined report there.
 
-  uv run tools/hf/run_suite.py --bucket USER/BUCKET --flavors rtx-pro-6000 h200 a100-large l40sx1 \\
+  uv run tools/hf/run_suite.py --bucket USER/BUCKET --flavors rtx-pro-6000 h200 a100-large \\
     --sync-assets --wait
 """
 
@@ -92,7 +92,7 @@ def launch(bucket: str, flavor: str, run: str, image: str, timeout: str, suite_a
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--bucket", required=True, help="Hugging Face bucket id, e.g. user/mujoco-warp-pbr")
-  parser.add_argument("--flavors", nargs="+", default=["rtx-pro-6000", "h200", "a100-large", "l40sx1"])
+  parser.add_argument("--flavors", nargs="+", default=["rtx-pro-6000", "h200", "a100-large"])
   parser.add_argument("--run", default=time.strftime("%Y%m%d-%H%M"), help="results sub-directory")
   parser.add_argument("--image", default=IMAGE)
   parser.add_argument("--timeout", default="3h", help="per-job cap, e.g. 90m or 3h")
