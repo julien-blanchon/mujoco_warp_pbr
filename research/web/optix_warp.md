@@ -156,12 +156,20 @@ Date: 2026-10-22. Code: `mujoco_warp_pbr/_src/optix/`. Option:
   - Entry names are read back from the PTX.
   - If OptiX rejects the device's PTX target, the build retries with sm_89. Driver 580 / OptiX 9.0
     needs this on sm_120. `MJPBR_OPTIX_PTX_ARCH` forces a target.
-- **Acceleration structures:**
-  - one triangle GAS per MuJoCo mesh, built from MuJoCo Warp's `wp.Mesh` points and indices;
-  - one IAS over all worlds' mesh instances;
-  - one identity instance of a single custom-primitive GAS, which holds every world's primitive
-    geoms as world-space AABBs. Its intersection programs run MuJoCo Warp's `ray_*` on the
-    translated world pose, so hits and normals match the software path.
+- **Acceleration structures** (layout of 2026-10-23):
+  - one triangle GAS per MuJoCo mesh, built from MuJoCo Warp's `wp.Mesh` points and indices, in
+    the authored frame R where `mesh_bvh_frame="auto"` re-frames the software BVH (instance
+    transform `geom_xmat @ R^T`; the normal still comes from the original mesh);
+  - boxes: instances of one unit-cube triangle GAS scaled to the box (hardware triangles; the
+    normal is the hit cube face's);
+  - spheres and capsules: one world-space GAS of OptiX built-in round linear curves (linear swept
+    spheres, hardware on Blackwell), a capsule one segment along its axis, a sphere a zero-length
+    segment (PyOptiX 9.0 has no sphere build input). The closest-hit program re-runs MuJoCo Warp's
+    `ray_sphere` / `ray_capsule` on the hit geom, so distances and normals match software;
+  - ellipsoids and cylinders: one world-space custom-primitive GAS whose intersection programs
+    run MuJoCo Warp's `ray_*` on the translated world pose;
+  - one IAS over all worlds' mesh and box instances plus one identity instance per world-space
+    GAS. SBT: triangles, curves, then one record per custom type.
 - **Planes** are not instanced: being infinite or larger than the scene, they would inflate the
   world cells. `trace_closest` / `trace_any` intersect them analytically with `ray_plane` and
   apply MuJoCo Warp's tie-break.
@@ -171,9 +179,10 @@ Date: 2026-10-22. Code: `mujoco_warp_pbr/_src/optix/`. Option:
     on the device every frame with atomics, with no host synchronisation.
   - Every ray, shadow rays included, is clipped to its cell, so a ray starting outside its cell
     (e.g. the camera) begins at the cell entry.
-- **Per frame:** five small Warp kernels run: bounds, cell, primitive AABBs, mesh instances and
-  the parameter copy. They are followed by a refit of the GAS and the IAS (`optix_rebuild_every`
-  rebuilds instead) and by `optixLaunch`.
+- **Per frame:** small Warp kernels write the bounds, cell, curve segments, custom AABBs,
+  triangle instances and the launch parameters (`Scene.write`, `Pipeline.store`). They are
+  followed by the OptiX calls: refits of the world-space GASes and the IAS
+  (`optix_rebuild_every` rebuilds instead) and `optixLaunch` (`Scene.build`, `Pipeline.trace`).
 - **Hit reconstruction.**
   - Mesh hits carry the instance id (world · ngeom + geom), the primitive index (face) and
     barycentrics.
@@ -200,22 +209,37 @@ Date: 2026-10-22. Code: `mujoco_warp_pbr/_src/optix/`. Option:
   - The ray-cone footprint now comes from the sub-pixel neighbour, which changes texture LOD
     marginally (≤ 1 level of 8-bit RGB difference).
 - **Register cap.** 64 registers per thread (`optix_max_registers`) is fastest; OptiX's default is
-  up to 20% slower.
+  up to 20% slower. Scenes with mirror reflections (a second trace and shading site) spill at 64:
+  the default is 96 for them (primitives scene 5.54 → 3.88 ms at 4096 × 64²).
+- **`traversal="auto"`** picks OptiX when meshes are rendered and it is available, else software.
 
 **Not supported or different:**
 - **CUDA graphs.** Stream capture records the parameter memcpy of `optixLaunch` but not its
   kernel, on OptiX 9.0 (RTX) and 9.1 (GH200), whether captured through Warp or through
-  `cuStreamBeginCapture` in any mode. `render` therefore raises inside a capture, and bench.py
-  times OptiX eagerly.
+  `cuStreamBeginCapture` in any mode. Nsight Systems shows why: the ray-tracing kernel is
+  submitted by the driver outside the CUDA API (attributed to the parameter memcpy) and runs
+  immediately even during capture, reading a parameter slot the captured copy never filled.
+  Captured accel builds replay but break OptiX's next eager build.
+  - Opt-in `optix_graph_capture` (`optix/graph.py`): the graph holds the frame's Warp kernels and
+    two libc host nodes (`sem_post`, `sem_wait`) around the OptiX calls, which a worker thread runs
+    on its own non-blocking stream. Replays match eager renders exactly.
+  - Caveat: a pageable device-to-host copy (`array.numpy()`) issued while such a graph runs
+    deadlocks (it holds a driver lock the worker's launches need while waiting for the graph);
+    synchronise first. GPU-side gating of pre-enqueued work (`cuStreamWaitValue32`) avoids that
+    but makes `wp.synchronize()` wait forever on the pending work.
+  - Single world 256²: 3.2–3.6k → 3.7–6.7k frames/s; batches gain nothing (0–14% slower), so
+    bench.py still times OptiX eagerly.
 - **Fallback to software** (with a warning) for flex, height fields, SDF geoms, the path-traced
   tier, a missing PyOptiX or missing OptiX headers.
 - **Exact ties** between overlapping surfaces may resolve differently from the software path
   (higher geom index wins there).
-- **Primitive-only scenes** gain nothing: the analytic intersection programs run on the SMs and
-  OptiX's per-call overhead dominates. Spheres break even; capsules are about 1.8× slower.
-  - The first version used one IAS instance per primitive over a shared unit-cube GAS, scaled to
-    the geom's local box. It was faster on the primitives scene: 4.85 vs 5.80 ms, both at OptiX's
-    default register count. It was equal on material_grid at the 64-register cap.
-  - It was never measured on mixed scenes, so it is the first candidate for a follow-up.
+- **Primitive-only scenes.** With hardware curves and cube instances, material_grid (spheres) is
+  1.26–1.36× faster than software. The primitives scene stays 0.80–0.92× of software, and the
+  cause is its mirror floor, not its primitives (without reflections: 2.37 vs 2.41 ms).
+  - Tracing the mirror ray through the camera-layer loop (one trace and shading site) was exact
+    in the software kernel but wrong in the OptiX program (rows of floor pixels), so it was
+    dropped.
+  - The first version's instance-per-primitive layout (4.85 vs 5.80 ms on primitives) was
+    superseded by the hardware curve / cube layout.
   - MuJoCo Warp's BVH inside the program was dropped. Warp's `bvh_query` uses a shared-memory
     stack, which OptiX rejects, and the ordered traversal there was 1.3–2.6× slower.
