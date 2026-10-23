@@ -144,6 +144,35 @@ faster when all worlds render nearly the same image, e.g. fixed cameras), `block
 `samples_per_pixel`, `shadow_samples`, and disabling unused features (`use_shadows`,
 `use_textures`, `specular_aa`, `enable_reflections`).
 
+## Running on CPU
+
+No GPU is needed: the renderer runs unchanged on Warp's CPU device, with images within 1/255 of
+the GPU's for the real-time tier.
+
+```python
+with wp.ScopedDevice("cpu"):
+  m = mjw.put_model(mjm)
+  d = mjw.put_data(mjm, mjd, nworld=16)
+  rc = mjpbr.create_render_context(mjm, nworld=16, cam_res=(64, 64), render_rgb=True)
+  mjpbr.render(m, d, rc)
+```
+
+Warp runs a CPU launch on a single core, so throughput does not grow with `nworld`. To use every
+core, give each core its own worker, with its own `Data` and render context: Python threads
+(Warp's launch releases the GIL) or pinned processes. `benchmarks/cpu_bench.py` measures this,
+plus MuJoCo's OpenGL renderer on a software rasteriser and Mitsuba 3's LLVM backend:
+
+```bash
+python benchmarks/cpu_bench.py --scene damaged_helmet --res 64 --nworld 32 --workers 1 8 32 [--mode process]
+python benchmarks/cpu_bench.py --parity --scene damaged_helmet --res 64   # CPU vs GPU images
+```
+
+DamagedHelmet at 64² renders at about 125–150 frames/s per core, scaling to 2.5k frames/s on a
+16-core / 32-thread EPYC and 34k on a GH200 node (4× 72-core Grace). One GH200 GPU is 6–47×
+faster than one 72-core Grace. A render context with an HDR environment takes about 35 s to
+create on the CPU, spent prefiltering the map. Full tables, the scaling curve and the baselines
+are in [`results/cpu.md`](results/cpu.md).
+
 ## Benchmarks and validation
 
 ```bash
