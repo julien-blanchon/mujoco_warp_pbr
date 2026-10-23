@@ -673,7 +673,9 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0) -> None:
       first eager render (or after such a change), or where the host-function bridge is
       unavailable (non-Linux); and for errors of OptiX work run by replayed graphs (`check`).
   """
-  key = _spec_key(m, rc, d.nworld)
+  # Only against an existing renderer: without one, settings_values could copy to the host (which
+  # fails inside a capture, where the missing renderer is reported below instead).
+  key = _spec_key(m, rc, d.nworld) if rc._optix is not None else None
   if wp.get_stream().is_capturing:
     if not rc.optix_graph_capture:
       raise RuntimeError(
@@ -697,6 +699,7 @@ def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0) -> None:
     )
     rc._optix.close()
     rc._optix = None
-  if rc._optix is None:
-    rc._optix = OptixRenderer(m, d, rc)
-  rc._optix.render(m, d, rc, seed)
+  renderer = rc._optix
+  if renderer is None:
+    renderer = rc._optix = OptixRenderer(m, d, rc)
+  renderer.render(m, d, rc, seed)
