@@ -36,8 +36,11 @@ The scene is static: world 0's prims keep the viewer's per-frame transform updat
 do not (``update()`` only refreshes world 0). Requires an RTX GPU and ``newton[rtx]``.
 """
 
+from __future__ import annotations
+
 import math
 import time
+from typing import TYPE_CHECKING, Any
 
 import mujoco
 import numpy as np
@@ -45,9 +48,12 @@ import warp as wp
 
 from references.newton_camera import newton_scene
 
+if TYPE_CHECKING:
+  from _common import RGB
+
 
 @wp.kernel
-def _extract_tiles(atlas: wp.array2d(dtype=wp.vec4ub), cols: int, first: int, res: int, out: wp.array4d(dtype=wp.uint8)):
+def _extract_tiles(atlas: wp.array2d[wp.vec4ub], cols: int, first: int, res: int, out: wp.array4d[wp.uint8]):
   w, y, x = wp.tid()
   tile = first + w
   p = atlas[(w // cols) * res + y, (w % cols) * res + x]
@@ -56,7 +62,9 @@ def _extract_tiles(atlas: wp.array2d(dtype=wp.vec4ub), cols: int, first: int, re
   out[tile, y, x, 2] = p[2]
 
 
-def _camera_matrix(pos: np.ndarray, xmat: np.ndarray) -> np.ndarray:
+def _camera_matrix(
+  pos: np.ndarray[[3], np.dtype[Any]], xmat: np.ndarray[[9], np.dtype[Any]]
+) -> np.ndarray[[4, 4], np.dtype[np.float64]]:
   """USD row-vector world matrix of a MuJoCo camera (both look along -Z with +Y up)."""
   mat = np.eye(4)
   mat[:3, :3] = xmat.reshape(3, 3).T
@@ -181,6 +189,8 @@ def _tiled_viewer_class():
 class OvrtxTiledCamera:
   """`nworld` copies of a MuJoCo scene rendered by Omniverse RTX from the MuJoCo camera "cam"."""
 
+  rgb: wp.array4d[wp.uint8]  # (nworld, res, res, 3), the last frame of every world
+
   def __init__(
     self,
     spec: mujoco.MjSpec,
@@ -295,11 +305,11 @@ class OvrtxTiledCamera:
       self._pending = None
     self.viewer.close()
 
-  def image(self, world: int = 0) -> np.ndarray:
+  def image(self, world: int = 0) -> RGB[int, int]:
     """Last frame of one world as float RGB in [0, 1], (res, res, 3)."""
     return self.rgb.numpy()[world].astype(np.float32) / 255.0
 
-  def atlas(self, count: int = 16) -> np.ndarray:
+  def atlas(self, count: int = 16) -> np.ndarray[[int, int, 3], np.dtype[np.uint8]]:
     """The first `count` worlds' last frames side by side, uint8 (res, count * res, 3)."""
     imgs = self.rgb.numpy()[:count]
     return np.concatenate(list(imgs), axis=1)

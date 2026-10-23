@@ -32,6 +32,8 @@ MuJoCo's default headlight.
   python benchmarks/gallery.py --scene damaged_helmet franka_showroom --frames 60
 """
 
+from __future__ import annotations
+
 import os
 
 # MuJoCo picks its OpenGL backend when it is imported: headless EGL unless set otherwise.
@@ -41,7 +43,7 @@ import argparse
 import copy
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import _common
 import mujoco
@@ -55,6 +57,11 @@ from PIL import ImageDraw
 import mujoco_warp_pbr as mjpbr
 from mujoco_warp_pbr._src import envmap as envmap_lib
 
+if TYPE_CHECKING:
+  from _common import RGB
+  from shape_extensions import Int
+  from shape_extensions import IntVar
+
 LABELS = {
   "mujoco": "MuJoCo (OpenGL)",
   "mjwarp": "MuJoCo Warp",
@@ -66,7 +73,13 @@ LABELS = {
 }
 
 
-def _orbit(mjm: mujoco.MjModel, cam: int, pos0: np.ndarray, quat0: np.ndarray, angle: float):
+def _orbit(
+  mjm: mujoco.MjModel,
+  cam: int,
+  pos0: np.ndarray[[3], np.dtype[np.float64]],
+  quat0: np.ndarray[[4], np.dtype[np.float64]],
+  angle: float,
+):
   """Rotates a world-attached camera about the world z axis."""
   qz = np.array([np.cos(angle / 2), 0.0, 0.0, np.sin(angle / 2)])
   rot = np.zeros(9)
@@ -141,20 +154,20 @@ class Gallery:
     if self.mitsuba:
       _common.setup_mitsuba("cuda_ad_rgb")
 
-  def frame(self, angle: float) -> list[np.ndarray | None]:
+  def frame(self, angle: float) -> list[RGB[int, int] | None]:
     for mjm in (self.mjm, self.mjm_stock):
       _orbit(mjm, self.cam, self.pos0, self.quat0, angle)
     mujoco.mj_forward(self.mjm, self.mjd)
     self.d.cam_xpos.assign(self.mjd.cam_xpos[None].astype(np.float32))
     self.d.cam_xmat.assign(self.mjd.cam_xmat.reshape(1, -1, 3, 3).astype(np.float32))
-    out = {}
+    out: dict[str, RGB[int, int] | None] = {}  # None: the Mitsuba panel is unavailable
     if self.gl is not None:
       self.gl.update_scene(self.mjd, camera=self.cam)
       out["mujoco"] = self.gl.render().astype(np.float32) / 255.0
     if self.stock is not None:
       mjw.refit_bvh(self.m_stock, self.d, self.stock)
       mjw.render(self.m_stock, self.d, self.stock)
-      rgb = wp.zeros((1, self.res, self.res), dtype=wp.vec3)
+      rgb = wp.zeros((1, self.res, self.res), dtype=wp.vec3)  # array[vec3, [1, res, res]]
       mjw.get_rgb(self.stock, 0, rgb)
       out["mjwarp"] = rgb.numpy()[0]
     if self.newton is not None:
@@ -181,7 +194,7 @@ class Gallery:
       out["mitsuba"] = self._mitsuba_frame()
     return [out.get(p) for p in self.panels]
 
-  def _mitsuba_frame(self) -> np.ndarray | None:
+  def _mitsuba_frame(self) -> RGB[int, int] | None:
     """The scene is exported to Mitsuba once; later frames only move its camera."""
     import mitsuba as mi
     from references import mitsuba_scene
@@ -221,9 +234,11 @@ class Gallery:
       self.rtx = None
 
 
-def sheet(images: list[np.ndarray | None], panels: list[str], res: int) -> Image.Image:
-  tiles = [np.clip(i, 0.0, 1.0) if i is not None else np.full((res, res, 3), 0.15) for i in images]
-  img = Image.fromarray((np.concatenate(tiles, axis=1) * 255 + 0.5).astype(np.uint8))
+def sheet[R: IntVar](images: list[RGB[R, R] | None], panels: list[str], res: Int[R]) -> Image.Image:
+  """The panels side by side, labelled: (res, len(panels) * res) pixels."""
+  tiles = [np.clip(i, 0.0, 1.0) if i is not None else np.full((res, res, 3), 0.15) for i in images]  # (res, res, 3) each
+  strip: np.ndarray[[R, int, 3], np.dtype[Any]] = np.concatenate(tiles, axis=1)
+  img = Image.fromarray((strip * 255 + 0.5).astype(np.uint8))
   draw = ImageDraw.Draw(img)
   for i, (panel, image) in enumerate(zip(panels, images, strict=False)):
     label = LABELS[panel] + ("" if image is not None else " (n/a)")

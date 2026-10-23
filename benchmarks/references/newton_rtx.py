@@ -21,10 +21,17 @@ preset ("studio") instead of the scene's lights and HDRI. The MuJoCo camera "cam
 the viewer's position / pitch / yaw (Z-up, no roll) and field of view.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import mujoco
 import numpy as np
 
 from references.newton_camera import newton_scene
+
+if TYPE_CHECKING:
+  from _common import RGB
 
 
 class NewtonRtxCamera:
@@ -60,6 +67,6 @@ class NewtonRtxCamera:
     """Releases the RTX renderer (one ViewerRTX at a time per process)."""
     self.viewer.close()
 
-  def image(self) -> np.ndarray:
+  def image(self) -> RGB[int, int]:
     """Last frame as float RGB in [0, 1], (res, res, 3)."""
     return self.frame.numpy()[..., :3].astype(np.float32) / 255.0

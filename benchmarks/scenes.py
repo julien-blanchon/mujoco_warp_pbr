@@ -27,11 +27,18 @@ display-relative radiance, with an optional environment map), and `tone_map` the
 the renderer's display path. Neither needs Mitsuba or the image metrics.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
 from _common import asset_dir
+
+if TYPE_CHECKING:
+  from _common import RGB
+  from shape_extensions import IntVar
 
 _LIGHT = '<light name="sun" type="directional" dir="-0.4 0.6 -0.7" castshadow="true"/>'
 
@@ -133,9 +140,10 @@ def _bake_pose(spec: mujoco.MjSpec, keyframe: str | None = None) -> mujoco.MjSpe
 
 def _stage(spec: mujoco.MjSpec, camera_pos, camera_xyaxes, fovy: float = 45.0, sun: bool = True, floor_size: float = 5.0):
   """Adds a floor, the camera and (optionally) the standard sun to a robot / asset spec."""
-  spec.visual.headlight.ambient = [0.2] * 3
-  spec.visual.headlight.diffuse = [0.3] * 3
-  spec.visual.headlight.specular = [0.3] * 3
+  # mujoco-stubs type these setters as float32 arrays; MuJoCo converts any 3-sequence.
+  spec.visual.headlight.ambient = [0.2] * 3  # pyrefly: ignore[bad-argument-type]
+  spec.visual.headlight.diffuse = [0.3] * 3  # pyrefly: ignore[bad-argument-type]
+  spec.visual.headlight.specular = [0.3] * 3  # pyrefly: ignore[bad-argument-type]
   spec.add_material(name="stage_floor", rgba=[0.5, 0.5, 0.5, 1.0], roughness=0.9)
   world = spec.worldbody
   if sun:
@@ -254,7 +262,7 @@ def _validation_khronos(model: str) -> mujoco.MjModel:
   return spec.compile()
 
 
-def _hdri(name: str) -> np.ndarray:
+def _hdri(name: str) -> RGB[int, int]:
   from mujoco_warp_pbr._src import envmap as envmap_lib
 
   return envmap_lib.load_hdr(asset_dir() / "hdri" / f"{name}_1k.hdr")
@@ -302,8 +310,10 @@ VALIDATION = {
 }
 
 
-def tone_map(hdr: np.ndarray, exposure: float) -> np.ndarray:
-  """numpy twin of the renderer's display path: exposure, PBR Neutral, sRGB."""
+def tone_map[H: IntVar, W: IntVar, F: np.floating](
+  hdr: np.ndarray[[H, W, 3], np.dtype[F]], exposure: float
+) -> np.ndarray[[H, W, 3], np.dtype[F]]:
+  """numpy twin of the renderer's display path (exposure, PBR Neutral, sRGB); keeps shape, dtype."""
   c = np.maximum(hdr * exposure, 0.0)
   x = c.min(axis=-1, keepdims=True)
   offset = np.where(x < 0.08, x - 6.25 * x * x, 0.04)

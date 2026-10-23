@@ -45,6 +45,8 @@ on a machine that also has an NVIDIA driver; MUJOCO_GL=osmesa works where libOSM
 Mitsuba's LLVM backend needs libLLVM (DRJIT_LIBLLVM_PATH if it is not found).
 """
 
+from __future__ import annotations
+
 import argparse
 import dataclasses
 import json
@@ -57,9 +59,12 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import _common
+
+if TYPE_CHECKING:
+  from _common import RGB
 
 # suite.py's renderer options (minus --renderer) and its HDR environment.
 RENDERERS = {
@@ -150,7 +155,7 @@ class Setup:
 
   step: Callable[[], Any]
   frames: int
-  image: Callable[[], Any] | None = None
+  image: Callable[[], RGB[int, int]] | None = None
   model: Any = None  # mjw.Model of the Warp renderers, shared by the thread workers
   gl_renderer: str | None = None  # OpenGL renderer string of the mujoco renderer
 
@@ -232,7 +237,7 @@ def build_warp(renderer: str, mjm, nworld: int, res: int, opts: dict[str, Any], 
     def step():
       mjw.render(m, d, rc)
 
-  def image():
+  def image() -> RGB[int, int]:
     out = wp.zeros((nworld, res, res), dtype=wp.vec3)
     mjw.get_rgb(base, 0, out)
     return out.numpy()[0]
@@ -252,7 +257,7 @@ def build_mujoco(mjm, res: int) -> Setup:
     renderer.update_scene(mjd, camera=cam)
     renderer.render()
 
-  def image():
+  def image() -> RGB[int, int]:
     renderer.update_scene(mjd, camera=cam)
     return renderer.render() / 255.0
 

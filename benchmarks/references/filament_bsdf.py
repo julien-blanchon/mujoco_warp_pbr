@@ -57,7 +57,8 @@ def register(dfg_lut: np.ndarray):
       self.roughness = _texture(props, "roughness", 0.5)
       self.reflectance = props.get("reflectance", 0.5)
       lut = dfg_lut
-      self.dfg = mi.Texture2f(mi.TensorXf(lut.astype(np.float32)))
+      # Mitsuba stubs: Texture2f is variant-dependent (typed `object`).
+      self.dfg = mi.Texture2f(mi.TensorXf(lut.astype(np.float32)))  # pyrefly: ignore[not-callable]
       flags = mi.BSDFFlags.DiffuseReflection | mi.BSDFFlags.GlossyReflection | mi.BSDFFlags.FrontSide
       self.m_components = [flags]
       self.m_flags = flags
@@ -133,15 +134,16 @@ def register(dfg_lut: np.ndarray):
 
       bs = mi.BSDFSample3f()
       bs.wo = wo
-      bs.eta = 1.0
-      bs.sampled_component = 0
-      bs.sampled_type = mi.UInt32(+mi.BSDFFlags.GlossyReflection)
+      # Mitsuba stubs type these setters with the variant's Dr.Jit types; scalars convert.
+      bs.eta = 1.0  # pyrefly: ignore[bad-argument-type]
+      bs.sampled_component = 0  # pyrefly: ignore[bad-argument-type]
+      bs.sampled_type = mi.UInt32(+mi.BSDFFlags.GlossyReflection)  # pyrefly: ignore[bad-argument-type]
       value, _, act = self._eval(si, wo, active)
       bs.pdf = self._pdf(si, wo, alpha, act)
       weight = dr.select(bs.pdf > 0, value / bs.pdf, 0.0)
       return bs, weight
 
-    def traverse(self, callback):
+    def traverse(self, cb):
       pass
 
     def to_string(self):

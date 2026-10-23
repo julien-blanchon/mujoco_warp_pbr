@@ -22,6 +22,10 @@ environment map. Material values come from
 the PbrRenderContext so both renderers see identical inputs. Requires a Mitsuba variant to be set.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 import mitsuba as mi
 import mujoco
 import numpy as np
@@ -30,22 +34,25 @@ import mujoco_warp_pbr as mjpbr
 from mujoco_warp_pbr._src import lights as pbr_lights
 from mujoco_warp_pbr._src.texture import is_srgb
 
+if TYPE_CHECKING:
+  from _common import RGB
+
 ROLE = mujoco.mjtTextureRole
 FLIP_NORMAL_GREEN = False
 
 
-def _transform(pos: np.ndarray, mat: np.ndarray, scale) -> "mi.ScalarTransform4f":
+def _transform(pos: np.ndarray, mat: np.ndarray, scale) -> mi.ScalarTransform4f:
   m = np.eye(4)
   m[:3, :3] = mat.reshape(3, 3) * np.asarray(scale)[None, :]
   m[:3, 3] = pos
   return mi.ScalarTransform4f(m.tolist())
 
 
-def _frame_z(axis: np.ndarray) -> np.ndarray:
+def _frame_z(axis: np.ndarray[[3], np.dtype[Any]]) -> np.ndarray[[3, 3], np.dtype[np.float64]]:
   """A rotation whose third column is the unit vector `axis`."""
-  z = axis / np.linalg.norm(axis)
+  z = axis / np.linalg.norm(axis)  # pyrefly: ignore[unsupported-operation] - numpy stubs: ndarray / floating
   x = np.cross([0.0, 1.0, 0.0] if abs(z[1]) < 0.9 else [1.0, 0.0, 0.0], z)
-  x /= np.linalg.norm(x)
+  x /= np.linalg.norm(x)  # pyrefly: ignore[unsupported-operation] - numpy stubs: ndarray / floating
   return np.stack([x, np.cross(z, x), z], axis=1)
 
 
@@ -62,11 +69,14 @@ def _tube(pos: np.ndarray, mat: np.ndarray, radius: float, half_length: float, c
   return shapes
 
 
-def _texture_array(mjm: mujoco.MjModel, rc: mjpbr.PbrRenderContext, tex_id: int) -> np.ndarray:
+def _texture_array(
+  mjm: mujoco.MjModel, rc: mjpbr.PbrRenderContext, tex_id: int
+) -> np.ndarray[[int, int, 4], np.dtype[np.float32]]:
   """The texture as uploaded to the GPU (sRGB decoded for colour textures), float32 (h, w, 4)."""
+  # mujoco-stubs give model arrays no rank, so tex_width[tex_id] & co. are not known to be scalars.
   w, h, nc = mjm.tex_width[tex_id], mjm.tex_height[tex_id], mjm.tex_nchannel[tex_id]
-  raw = mjm.tex_data[mjm.tex_adr[tex_id] : mjm.tex_adr[tex_id] + w * h * nc].reshape(h, w, nc).astype(np.float32) / 255
-  rgba = np.ones((h, w, 4), np.float32)
+  raw = mjm.tex_data[mjm.tex_adr[tex_id] : mjm.tex_adr[tex_id] + w * h * nc].reshape(h, w, nc).astype(np.float32) / 255  # pyrefly: ignore[bad-argument-type]
+  rgba = np.ones((h, w, 4), np.float32)  # pyrefly: ignore[no-matching-overload]
   if nc == 1:
     rgba[..., :3] = raw
   else:
@@ -147,7 +157,7 @@ def _emitter(mjm, rc, geom: int) -> dict | None:
   return {"type": "area", "radiance": {"type": "rgb", "value": (rgba[:3] * emission).tolist()}}
 
 
-def _mesh_shape(mjm, mjd, geom: int, name: str, bsdf: dict, emitter: dict | None) -> "mi.Mesh":
+def _mesh_shape(mjm, mjd, geom: int, name: str, bsdf: dict, emitter: dict | None) -> mi.Mesh:
   mesh = mjm.geom_dataid[geom]
   face = mjm.mesh_face[mjm.mesh_faceadr[mesh] : mjm.mesh_faceadr[mesh] + mjm.mesh_facenum[mesh]]
   vert = mjm.mesh_vert[mjm.mesh_vertadr[mesh] : mjm.mesh_vertadr[mesh] + mjm.mesh_vertnum[mesh]]
@@ -165,7 +175,7 @@ def _mesh_shape(mjm, mjd, geom: int, name: str, bsdf: dict, emitter: dict | None
   params = mi.traverse(out)
   params["vertex_positions"] = mi.Float(pos.ravel())
   params["vertex_normals"] = mi.Float(normal.ravel())
-  params["faces"] = mi.UInt(np.arange(3 * nface, dtype=np.uint32))
+  params["faces"] = mi.UInt(np.arange(3 * nface, dtype=np.uint32))  # pyrefly: ignore[unexpected-keyword] - numpy stubs
   if has_uv:
     facetc = mjm.mesh_facetexcoord[mjm.mesh_faceadr[mesh] : mjm.mesh_faceadr[mesh] + nface]
     uv = mjm.mesh_texcoord[mjm.mesh_texcoordadr[mesh] + facetc.ravel()].astype(np.float32)
@@ -183,8 +193,8 @@ def scene_dict(
   width: int,
   height: int,
   spp: int,
-  envmap: np.ndarray | None = None,
-  env_to_world: "mi.ScalarTransform4f | None" = None,
+  envmap: RGB[int, int] | None = None,
+  env_to_world: mi.ScalarTransform4f | None = None,
   integrator: str = "direct",
   max_depth: int = 2,
   bsdf: str = "filament",
@@ -197,7 +207,7 @@ def scene_dict(
   zaxis = mjd.cam_xmat[camera].reshape(3, 3)[:, 2]
   yaxis = mjd.cam_xmat[camera].reshape(3, 3)[:, 1]
   origin = mjd.cam_xpos[camera]
-  scene = {
+  scene: dict[str, Any] = {
     "type": "scene",
     "integrator": {"type": integrator} if integrator == "direct" else {"type": integrator, "max_depth": max_depth},
     "sensor": {
@@ -218,6 +228,7 @@ def scene_dict(
     size = mjm.geom_size[g]
     pos, mat = mjd.geom_xpos[g], mjd.geom_xmat[g]
     bsdf_dict = _bsdf(mjm, rc, g, bsdf)
+    shape: dict[str, Any]
     if gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
       shape = {"type": "sphere", "center": pos.tolist(), "radius": float(size[0])}
     elif gtype == mujoco.mjtGeom.mjGEOM_ELLIPSOID:
@@ -289,7 +300,7 @@ def scene_dict(
   return scene
 
 
-def environment_to_world(yaw: float) -> "mi.ScalarTransform4f":
+def environment_to_world(yaw: float) -> mi.ScalarTransform4f:
   """Maps Mitsuba's Y-up lat-long frame onto ours (row 0 = +z, centre column = +x, yaw about z).
 
   Mitsuba looks up u = atan2(x, -z) / 2π, v = acos(y) / π in its local frame, so local
@@ -299,6 +310,6 @@ def environment_to_world(yaw: float) -> "mi.ScalarTransform4f":
   return mi.ScalarTransform4f().rotate([0, 0, 1], float(np.degrees(yaw))) @ frame
 
 
-def render(scene: dict, seed: int = 0) -> np.ndarray:
+def render(scene: dict, seed: int = 0) -> RGB[int, int]:
   """Linear radiance (height, width, 3)."""
-  return np.array(mi.render(mi.load_dict(scene), seed=seed))
+  return np.array(mi.render(mi.load_dict(scene), seed=seed))  # pyrefly: ignore[bad-argument-type] - Mitsuba stubs: seed is UInt32
