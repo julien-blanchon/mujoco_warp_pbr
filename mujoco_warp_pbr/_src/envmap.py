@@ -27,8 +27,10 @@ For each map we keep
     lobe and 1/π (Ramamoorthi & Hanrahan 2001), so they evaluate to Lambertian radiance.
 """
 
+import concurrent.futures
 import dataclasses
 import math
+import os
 import re
 from pathlib import Path
 from typing import Tuple
@@ -52,6 +54,8 @@ PREFILTER_LEVELS = 8
 PREFILTER_SAMPLES = 512
 # Radiance textures larger than this are downsampled (box filter) before upload.
 MAX_RADIANCE_WIDTH = 2048
+# Threads prefiltering an environment map on the CPU device.
+_MAX_PREFILTER_THREADS = 16
 # Resolution of the luminance distribution used for importance sampling (path-traced tier).
 CDF_WIDTH = 256
 
@@ -155,10 +159,12 @@ def _prefilter(
   source_width: int,
   source_height: int,
   nsample: int,
+  row_offset: int,
   # Out:
   stack_out: wp.array4d[wp.float16],
 ):
-  level, y, x = wp.tid()
+  level, row, x = wp.tid()
+  y = row + row_offset
   nlevel = stack_out.shape[0]
   height = stack_out.shape[1]
   width = stack_out.shape[2]
@@ -309,6 +315,35 @@ def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> np.ndarray | None:
   return image.numpy()
 
 
+def _launch_prefilter(radiance: wp.Texture2D, width: int, height: int, stack: wp.array):
+  """Runs `_prefilter` over the stack; on the CPU in row bands on several threads.
+
+  Warp runs a CPU launch on one thread (and releases the GIL meanwhile): prefiltering a 1k map
+  serially takes ~30 s. The bands compute exactly the texels of the single launch.
+  """
+  nlevel, rows, cols = stack.shape[0], stack.shape[1], stack.shape[2]
+  device = wp.get_device()
+  nthread = min(os.cpu_count() or 1, _MAX_PREFILTER_THREADS) if device.is_cpu else 1
+  if nthread <= 1:
+    wp.launch(_prefilter, dim=(nlevel, rows, cols), inputs=[radiance, width, height, PREFILTER_SAMPLES, 0], outputs=[stack])
+    return
+  band = -(-rows // nthread)
+
+  def run(row0: int):
+    with wp.ScopedDevice(device):
+      wp.launch(
+        _prefilter,
+        dim=(nlevel, min(band, rows - row0), cols),
+        inputs=[radiance, width, height, PREFILTER_SAMPLES, row0],
+        outputs=[stack],
+      )
+
+  # Load (compile) the module once before the threads launch it.
+  wp.load_module(device=device)
+  with concurrent.futures.ThreadPoolExecutor(nthread) as pool:
+    list(pool.map(run, range(0, rows, band)))
+
+
 class EnvironmentMap:
   """GPU resources for one environment map."""
 
@@ -326,7 +361,7 @@ class EnvironmentMap:
     )
     pw = min(PREFILTER_WIDTH, w)
     stack = wp.zeros((PREFILTER_LEVELS, pw // 2, pw, 4), dtype=wp.float16)
-    wp.launch(_prefilter, dim=(PREFILTER_LEVELS, pw // 2, pw), inputs=[self.radiance, w, h, PREFILTER_SAMPLES], outputs=[stack])
+    _launch_prefilter(self.radiance, w, h, stack)
     self.prefiltered = wp.Texture3D(
       stack,
       filter_mode=wp.TextureFilterMode.LINEAR,
@@ -435,13 +470,13 @@ class Environments:
   """
 
   maps: list
-  radiance: wp.array
-  prefiltered: wp.array
-  sh: wp.array
+  radiance: wp.array[wp.Texture2D]
+  prefiltered: wp.array[wp.Texture3D]
+  sh: wp.array2d[wp.vec3]
   width: float
-  prob: wp.array
-  marginal: wp.array
-  conditional: wp.array
+  prob: wp.array3d[float]
+  marginal: wp.array2d[float]
+  conditional: wp.array3d[float]
 
 
 def build_environments(images: list[np.ndarray]) -> Environments:
