@@ -91,7 +91,7 @@ def test_supersampling_resolves_edge_coverage(scene):
       </worldbody>
     </mujoco>
   """
-  kwargs = dict(tone_mapper=mjpbr.ToneMapper.CLAMP, cam_res=(8, 8))
+  kwargs = {"tone_mapper": mjpbr.ToneMapper.CLAMP, "cam_res": (8, 8)}
   hard = scene(xml, samples_per_pixel=1, **kwargs).render().rgb()[0]
   soft = scene(xml, samples_per_pixel=4, **kwargs).render().rgb()[0]
   # The box edge (x = 0.013) cuts through a pixel column right of the image centre.

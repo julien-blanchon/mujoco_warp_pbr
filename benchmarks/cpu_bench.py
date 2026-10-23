@@ -21,7 +21,7 @@ worlds on its own core(s), the way W simulation workers would:
 
   --mode thread    one process, W Python threads, each with its own render context (Warp's
                    native launch call releases the GIL, so the kernels run concurrently)
-  --mode process   W processes (like multigpu.py), each pinned to its cores
+  --mode process   W processes (like bench.py --gpus), each pinned to its cores
 
 Workers are pinned to cores (packed: the first NUMA domain fills up first), warm up and compile
 before a barrier, then render back to back for --seconds. Reports the aggregate frames/s.
@@ -46,6 +46,7 @@ Mitsuba's LLVM backend needs libLLVM (DRJIT_LIBLLVM_PATH if it is not found).
 """
 
 import argparse
+import dataclasses
 import json
 import os
 import platform
@@ -54,10 +55,11 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+import _common
 
 # suite.py's renderer options (minus --renderer) and its HDR environment.
 RENDERERS = {
@@ -67,17 +69,8 @@ RENDERERS = {
   "mujoco": ("mujoco", []),
   "mitsuba": ("mitsuba", []),
 }
-ENV_RENDERERS = {"pbr", "pbr_path", "mitsuba"}
-ENVMAP = "studio_small_09_1k.hdr"
 SEQUENTIAL = {"mujoco", "mitsuba"}  # one image per step
 WARP_RENDERERS = {"pbr", "pbr_path", "mjwarp"}
-
-
-def _parse_value(text: str):
-  try:
-    return json.loads(text)
-  except json.JSONDecodeError:
-    return text
 
 
 # ---------------------------------------------------------------------------------------------
@@ -106,7 +99,7 @@ def _parse_cpulist(text: str) -> list[int]:
 
 
 def allowed_cores() -> list[int]:
-  return sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count()))
+  return sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
 
 
 def smt_rank(cpu: int) -> int:
@@ -132,20 +125,17 @@ def assign_cores(workers: int, per_worker: int, cores: list[int]) -> list[list[i
 
 
 def cpu_model() -> str:
-  try:
-    out = subprocess.run(["lscpu"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-      if line.startswith("Model name:"):
-        return line.split(":", 1)[1].strip()
-  except OSError:
-    pass
+  for line in (_common.run(["lscpu"]) or "").splitlines():
+    if line.startswith("Model name:"):
+      return line.split(":", 1)[1].strip()
   return platform.processor() or platform.machine()
 
 
-def _pin_thread(cores: list[int]):
-  if hasattr(os, "sched_setaffinity"):
+def _pin(pid: int, cores: list[int]):
+  """Pins a process (pid 0: this one) or thread (native id) to cores where the OS supports it."""
+  if cores and hasattr(os, "sched_setaffinity"):
     try:
-      os.sched_setaffinity(threading.get_native_id(), cores)
+      os.sched_setaffinity(pid, cores)
     except OSError:
       pass
 
@@ -154,11 +144,15 @@ def _pin_thread(cores: list[int]):
 # Renderers
 
 
+@dataclasses.dataclass
 class Setup:
-  """One worker's renderer: step() renders `frames` images."""
+  """One worker's renderer: step() renders `frames` images; image() is world 0's last image."""
 
-  def __init__(self, step, frames: int, image=None):
-    self.step, self.frames, self.image = step, frames, image
+  step: Callable[[], Any]
+  frames: int
+  image: Callable[[], Any] | None = None
+  model: Any = None  # mjw.Model of the Warp renderers, shared by the thread workers
+  gl_renderer: str | None = None  # OpenGL renderer string of the mujoco renderer
 
 
 def scene_model(scene: str):
@@ -168,17 +162,18 @@ def scene_model(scene: str):
   return group, make().compile()
 
 
-def options(renderer: str, scene: str, extra: list[str], envmap: bool) -> dict:
+def options(renderer: str, scene: str, extra: list[str], envmap: bool) -> dict[str, Any]:
+  """The renderer's keyword arguments, unresolved (envmap asset-relative, as rows record them)."""
   import scenes
 
-  kv = list(RENDERERS[renderer][1]) + list(extra)
-  opts = {k: _parse_value(v) for k, v in (s.split("=", 1) for s in kv)}
-  if envmap and renderer in ENV_RENDERERS and scene not in scenes.LIGHTS_ONLY and "envmap" not in opts:
-    opts["envmap"] = str(scenes.asset_dir() / "hdri" / ENVMAP)
+  opts = _common.parse_options([*RENDERERS[renderer][1], *extra])
+  if envmap and renderer in _common.ENV_RENDERERS and scene not in scenes.LIGHTS_ONLY and "envmap" not in opts:
+    opts |= _common.parse_options([_common.ENVMAP_OPTION])
   return opts
 
 
 _ENV_CACHE: dict = {}
+_ENV_SHARED = False
 _ENV_LOCK = threading.Lock()
 
 
@@ -194,22 +189,23 @@ def share_environments():
 
   from mujoco_warp_pbr._src import envmap as envmap_lib
 
-  if getattr(envmap_lib.build_environments, "_shared", False):
+  global _ENV_SHARED
+  if _ENV_SHARED:
     return
+  _ENV_SHARED = True
   build = envmap_lib.build_environments
 
-  def shared(images):
+  def shared(images: list):
     key = (str(wp.get_device()), tuple(hashlib.sha1(im.tobytes()).hexdigest() for im in images))
     with _ENV_LOCK:
       if key not in _ENV_CACHE:
         _ENV_CACHE[key] = build(images)
       return _ENV_CACHE[key]
 
-  shared._shared = True
   envmap_lib.build_environments = shared
 
 
-def build_warp(renderer: str, mjm, nworld: int, res: int, opts: dict, m=None) -> Setup:
+def build_warp(renderer: str, mjm, nworld: int, res: int, opts: dict[str, Any], m=None) -> Setup:
   """pbr / pbr_path / mjwarp on the current Warp device (call inside wp.ScopedDevice)."""
   import mujoco
   import mujoco_warp as mjw
@@ -223,7 +219,7 @@ def build_warp(renderer: str, mjm, nworld: int, res: int, opts: dict, m=None) ->
   m = m if m is not None else mjw.put_model(mjm)
   d = mjw.put_data(mjm, mjd, nworld=nworld)
   cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
-  common = dict(nworld=nworld, cam_res=(res, res), cam_active=[cam], render_rgb=True)
+  common: dict[str, Any] = {"nworld": nworld, "cam_res": (res, res), "cam_active": [cam], "render_rgb": True}
   if RENDERERS[renderer][0] == "pbr":
     rc = mjpbr.create_render_context(mjm, **(common | opts))
     base = rc.base
@@ -241,9 +237,7 @@ def build_warp(renderer: str, mjm, nworld: int, res: int, opts: dict, m=None) ->
     mjw.get_rgb(base, 0, out)
     return out.numpy()[0]
 
-  setup = Setup(step, nworld, image)
-  setup.model = m
-  return setup
+  return Setup(step, nworld, image, model=m)
 
 
 def build_mujoco(mjm, res: int) -> Setup:
@@ -262,9 +256,7 @@ def build_mujoco(mjm, res: int) -> Setup:
     renderer.update_scene(mjd, camera=cam)
     return renderer.render() / 255.0
 
-  setup = Setup(step, 1, image)
-  setup.gl_renderer = _gl_renderer_name()
-  return setup
+  return Setup(step, 1, image, gl_renderer=_gl_renderer_name())
 
 
 def _gl_renderer_name() -> str | None:
@@ -276,25 +268,20 @@ def _gl_renderer_name() -> str | None:
     return None
 
 
-def build_mitsuba(mjm, res: int, opts: dict, threads: int, spp: int = 16) -> Setup:
+def build_mitsuba(mjm, res: int, opts: dict[str, Any], threads: int, spp: int = 16) -> Setup:
   """Mitsuba 3 on the CPU (llvm_ad_rgb): path tracer, 16 spp, our BRDF and environment."""
   import drjit as dr
-  import mitsuba as mi
   import mujoco
   import warp as wp
-
-  mi.set_variant("llvm_ad_rgb")
-  if hasattr(dr, "set_thread_count"):
-    dr.set_thread_count(threads)
-  from references import filament_bsdf
   from references import mitsuba_scene
 
   import mujoco_warp_pbr as mjpbr
   from mujoco_warp_pbr._src import envmap as envmap_lib
-  from mujoco_warp_pbr._src import ibl
 
   with wp.ScopedDevice("cpu"):
-    filament_bsdf.register(ibl.dfg_lut_array().numpy())
+    mi = _common.setup_mitsuba("llvm_ad_rgb")
+    if hasattr(dr, "set_thread_count"):
+      dr.set_thread_count(threads)
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
@@ -341,16 +328,9 @@ def timed(setup: Setup, seconds: float, start_event=None) -> dict:
   }
 
 
-def file_barrier(directory: str, count: int):
-  Path(directory, str(os.getpid())).touch()
-  while len(os.listdir(directory)) < count:
-    time.sleep(0.02)
-
-
 def worker_main(spec: dict):
   """One process worker (--mode process): pin, build, compile, barrier, time; print a JSON line."""
-  if spec["cores"] and hasattr(os, "sched_setaffinity"):
-    os.sched_setaffinity(0, spec["cores"])
+  _pin(0, spec["cores"])
   import warp as wp
 
   wp.config.quiet = True
@@ -373,26 +353,31 @@ def worker_main(spec: dict):
   first_call = time.perf_counter() - t
   barrier, count = spec["barrier"].rsplit(":", 1)
   with wp.ScopedDevice("cpu"):
-    result = timed(setup, spec["seconds"], lambda: file_barrier(barrier, int(count)))
+    result = timed(setup, spec["seconds"], lambda: _common.file_barrier(barrier, int(count)))
   result["build_s"], result["first_call_s"] = build, first_call
-  result["gl_renderer"] = getattr(setup, "gl_renderer", None)
+  result["gl_renderer"] = setup.gl_renderer
   print(json.dumps(result), flush=True)
 
 
-def run_processes(args, renderer: str, opts: dict, groups: list[list[int]]) -> list[dict]:
-  barrier = tempfile.mkdtemp(prefix="mjpbr-cpu-barrier-")
+def run_processes(args, renderer: str, opts: dict[str, Any], groups: list[list[int]]) -> list[dict | None]:
+  with _common.barrier_dir("mjpbr-cpu-barrier-") as barrier:
+    return _run_processes(args, renderer, opts, groups, barrier)
+
+
+def _run_processes(args, renderer: str, opts: dict[str, Any], groups: list[list[int]], barrier: str) -> list[dict | None]:
   procs = []
+  logs = []
   for i, cores in enumerate(groups):
-    spec = dict(
-      renderer=renderer,
-      scene=args.scene,
-      nworld=args.nworld,
-      res=args.res,
-      options=opts,
-      cores=cores,
-      seconds=args.seconds,
-      barrier=f"{barrier}:{len(groups)}",
-    )
+    spec = {
+      "renderer": renderer,
+      "scene": args.scene,
+      "nworld": args.nworld,
+      "res": args.res,
+      "options": opts,
+      "cores": cores,
+      "seconds": args.seconds,
+      "barrier": f"{barrier}:{len(groups)}",
+    }
     env = dict(os.environ)
     if renderer == "mujoco":
       env["LP_NUM_THREADS"] = str(len(cores))
@@ -401,31 +386,35 @@ def run_processes(args, renderer: str, opts: dict, groups: list[list[int]]) -> l
     # driver for minutes on a GPU machine.
     env["CUDA_VISIBLE_DEVICES"] = ""
     cmd = [sys.executable, str(Path(__file__).resolve()), "--_worker", json.dumps(spec)]
-    procs.append(subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+    # Files, not pipes: a worker blocked on a full pipe would stall the others at the barrier.
+    out, err = tempfile.TemporaryFile("w+"), tempfile.TemporaryFile("w+")
+    logs.append((out, err))
+    procs.append(subprocess.Popen(cmd, env=env, stdout=out, stderr=err, text=True))
     if i == 0 and len(groups) > 1:
       # Compile once: the others start after worker 0 is warm and load Warp's kernel cache.
       while not os.listdir(barrier) and procs[0].poll() is None:
         time.sleep(0.05)
-  rows = []
-  for p in procs:
-    out, err = p.communicate()
-    lines = [line for line in out.splitlines() if line.startswith("{")]
-    if not lines:
-      sys.stderr.write(err[-3000:])
-    rows.append(json.loads(lines[-1]) if lines else None)
-  for f in os.listdir(barrier):
-    os.unlink(os.path.join(barrier, f))
-  os.rmdir(barrier)
+  rows: list[dict | None] = []
+  for p, (out, err) in zip(procs, logs, strict=False):
+    p.wait()
+    out.seek(0)
+    lines = [line for line in out.read().splitlines() if line.startswith("{")]
+    if p.returncode != 0 or not lines:
+      err.seek(0)
+      sys.stderr.write(err.read()[-3000:])
+    rows.append(json.loads(lines[-1]) if lines and p.returncode == 0 else None)
+    out.close()
+    err.close()
   return rows
 
 
-def run_threads(args, renderer: str, opts: dict, groups: list[list[int]]) -> list[dict]:
+def run_threads(args, renderer: str, opts: dict[str, Any], groups: list[list[int]]) -> list[dict | None]:
   """W threads in this process, each with its own Data and render context (one shared Model)."""
   import warp as wp
 
   if renderer not in WARP_RENDERERS:
     raise SystemExit(f"--mode thread supports {sorted(WARP_RENDERERS)}; use --mode process for {renderer}")
-  os.sched_setaffinity(0, sorted({c for g in groups for c in g}))
+  _pin(0, sorted({c for g in groups for c in g}))
   _, mjm = scene_model(args.scene)
   # Worker 0 builds and compiles first; the others then build their contexts in parallel.
   t = time.perf_counter()
@@ -436,21 +425,23 @@ def run_threads(args, renderer: str, opts: dict, groups: list[list[int]]) -> lis
     first.step()
     wp.synchronize()
     first_call = time.perf_counter() - t
-  setups: list = [first] + [None] * (len(groups) - 1)
-  rows: list = [None] * len(groups)
+  setups: list[Setup | None] = [first] + [None] * (len(groups) - 1)
+  rows: list[dict | None] = [None] * len(groups)
   barrier = threading.Barrier(len(groups))
 
   def work(i):
-    _pin_thread(groups[i])
+    _pin(threading.get_native_id(), groups[i])
     try:
       with wp.ScopedDevice("cpu"):
-        if setups[i] is None:
-          setups[i] = build_warp(renderer, mjm, args.nworld, args.res, opts, m=first.model)
-          setups[i].step()
-        rows[i] = timed(setups[i], args.seconds, barrier.wait)
-        rows[i]["build_s"], rows[i]["first_call_s"] = build, first_call
-    except Exception:
-      barrier.abort()
+        setup = setups[i]
+        if setup is None:
+          setup = setups[i] = build_warp(renderer, mjm, args.nworld, args.res, opts, m=first.model)
+          setup.step()
+        row = timed(setup, args.seconds, barrier.wait)
+        row["build_s"], row["first_call_s"] = build, first_call
+        rows[i] = row
+    except BaseException:
+      barrier.abort()  # release the other threads, then report this one's error
       raise
 
   threads = [threading.Thread(target=work, args=(i,)) for i in range(len(groups))]
@@ -467,8 +458,9 @@ def measure(args, workers: int, base: dict) -> dict | None:
   per_worker = args.threads_per_worker
   groups = assign_cores(workers, per_worker, args.cores)
   mode = "process" if renderer not in WARP_RENDERERS else args.mode
-  rows = (run_threads if mode == "thread" else run_processes)(args, renderer, opts, groups)
-  if any(r is None for r in rows):
+  results = (run_threads if mode == "thread" else run_processes)(args, renderer, _common.resolve_options(opts), groups)
+  rows = [r for r in results if r is not None]
+  if len(rows) != len(results):
     print(f"{renderer} {args.scene} {workers} worker(s): a worker failed", flush=True)
     return None
   cores = workers * per_worker
@@ -526,9 +518,10 @@ def parity(args, base: dict) -> list[dict]:
     images = {}
     for device in ("cpu", "cuda:0"):
       with wp.ScopedDevice(device):
-        setup = build_warp(renderer, mjm, 1, args.res, opts)
+        setup = build_warp(renderer, mjm, 1, args.res, _common.resolve_options(opts))
         setup.step()
         wp.synchronize()
+        assert setup.image is not None
         images[device] = np.clip(np.round(setup.image() * 255), 0, 255).astype(np.int16)
     diff = np.abs(images["cpu"] - images["cuda:0"])
     mse = float(np.mean((diff / 255.0) ** 2))
@@ -551,7 +544,7 @@ def parity(args, base: dict) -> list[dict]:
   return rows
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--_worker", help=argparse.SUPPRESS)
   parser.add_argument("--scene", default="material_grid")
@@ -568,7 +561,16 @@ def main():
   parser.add_argument("--parity", action="store_true", help="compare world 0 on CPU and GPU instead")
   parser.add_argument("--label", default=None, help="free-form tag stored in each row (e.g. the machine)")
   parser.add_argument("--out", type=Path)
-  args = parser.parse_args()
+  args = parser.parse_args(argv)
+  try:
+    _common.parse_options(args.set)
+  except ValueError as e:
+    parser.error(str(e))
+  return args
+
+
+def main(argv: list[str] | None = None):
+  args = parse_args(argv)
   if args._worker:
     worker_main(json.loads(args._worker))
     return

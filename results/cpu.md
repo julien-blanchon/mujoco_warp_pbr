@@ -38,7 +38,7 @@ simulation worker per core would:
   render context; the `Model` is shared. Warp's launch goes through ctypes, which releases the
   GIL, so the kernels of different threads run concurrently. Threads are pinned with
   `sched_setaffinity` on their native thread id.
-- `--mode process`: W processes pinned to their cores, like `benchmarks/multigpu.py`. The first
+- `--mode process`: W processes pinned to their cores, like `benchmarks/bench.py --gpus`. The first
   worker compiles alone, and the others then load Warp's kernel cache. Workers start with
   `CUDA_VISIBLE_DEVICES=""`: on a GPU machine, hundreds of processes each creating a CUDA context
   serialise in the driver for minutes.

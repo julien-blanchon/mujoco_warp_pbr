@@ -78,11 +78,8 @@ Only native MuJoCo fields are used, so existing MJCF works unchanged:
 | light `attenuation`, `cutoff`, `exponent`, `ambient`, `specular` | MuJoCo's GL semantics (`light_model=LightModel.MUJOCO`) |
 | skybox texture | environment lighting and background when no `envmap` is given |
 
-Two converters produce MJCF with these fields:
-- `tools/gltf_to_mjcf.py` converts glTF 2.0 assets (metallic-roughness core);
-- `tools/usd_to_mjcf.py` converts USD stages: UsdPreviewSurface and OmniPBR materials with their
-  textures, and UsdLux lights mapped to MuJoCo lights. It is used for the Isaac Sim / IsaacLab
-  demo scenes in `benchmarks/scenes.py`.
+`tools/gltf_to_mjcf.py` converts glTF 2.0 assets (metallic-roughness core) to MJCF with these
+fields.
 
 Supported geometry: planes, spheres, capsules, ellipsoids, cylinders, boxes, meshes, height fields
 and SDFs with full PBR; flex is shaded without normal maps and Gaussian splats keep MuJoCo Warp's
@@ -134,9 +131,9 @@ and all renderers in [`results/suite/suite-v2`](results/suite/suite-v2/README.md
 Left to right: MuJoCo OpenGL, MuJoCo Warp, Newton `SensorCamera`, Newton `ViewerRTX`, this
 renderer's real-time tier, its path-traced tier (256 spp) and Mitsuba 3 (256 spp).
 
-See `results/scaling.md`, `results/m5_baseline.md` and `results/m7_autoresearch.md` for more
-tables, `results/m6_pathtrace.md` for the path-traced tier and `results/rt_backend.md` for the
-OptiX backend.
+See `results/scaling.md` and the milestone logs in [`results/history/`](results/history/README.md)
+(`m5_baseline.md`, `m7_autoresearch.md`) for more tables, `results/history/m6_pathtrace.md` for the
+path-traced tier and `results/rt_backend.md` for the OptiX backend.
 
 Tuning knobs: `max_registers` (96 by default, tuned on Hopper; 0 leaves it to the compiler),
 `render_order` (`RenderOrder.TILED` default; `RenderOrder.WORLD` is up to 2.7×
@@ -178,15 +175,17 @@ are in [`results/cpu.md`](results/cpu.md).
 ```bash
 python tools/fetch_assets.py            # Khronos glTF, Menagerie robots, Poly Haven HDRIs
 python benchmarks/bench.py --scene damaged_helmet --nworld 4096 --res 64
-python benchmarks/sweep.py --preset score --out results/score.jsonl   # also: scaling, tune, renderers
+python benchmarks/bench.py --scene damaged_helmet --nworld 4096 --res 64 --gpus 0 1 2 3   # multi-GPU scaling
+python benchmarks/sweep.py --preset score --out results/score.jsonl   # also: scaling, tune
 python benchmarks/validate.py --res 256 --spp 1024   # FLIP / PSNR against Mitsuba 3
+python benchmarks/denoise_eval.py --scene grid_env --samples 4 16   # FLIP of the denoiser
 python benchmarks/gallery.py --scene franka_showroom --frames 48      # side-by-side orbit video
 ```
 
-Assets are cached in `$MJPBR_ASSET_DIR` (default `~/.cache/mujoco_warp_pbr`). The reference
-renderers (Mitsuba 3, Newton) and image metrics install with the `bench` extra.
-`tools/fetch_assets.py --only isaac` fetches the Isaac demo scenes; their licence allows local use
-only.
+Assets are cached in `$MJPBR_ASSET_DIR` (default `~/.cache/mujoco_warp_pbr`); `--set
+envmap=hdri/<file>.hdr` and the other scripts resolve relative environment maps against it. The
+reference renderers (Mitsuba 3, Newton) and image metrics install with the `bench` extra.
+`benchmarks/cpu_bench.py` is the CPU counterpart of `bench.py` (see Running on CPU).
 
 `benchmarks/suite.py` compares every renderer:
 - this renderer: real-time tier, path-traced tier, and through `newton_pbr`;
@@ -207,7 +206,8 @@ uv run tools/hf/run_suite.py --bucket USER/BUCKET --flavors rtx-pro-6000 h200 a1
 ```bash
 uv sync --all-extras
 uv run pytest
-uv run ruff check . && uv run ruff format --check .
+uv run pytest -m "not slow"   # skips the high-sample path-traced references
+uv run ruff check . && uv run ruff format --check .   # or: pre-commit install
 ```
 
 Design notes and literature: [`research/`](research/README.md).

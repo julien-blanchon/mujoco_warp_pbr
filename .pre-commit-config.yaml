@@ -1,0 +1,7 @@
+# pre-commit install   # then runs on every commit; `pre-commit run --all-files` checks everything
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+      - id: ruff-format

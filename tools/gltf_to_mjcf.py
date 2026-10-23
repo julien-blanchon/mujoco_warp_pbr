@@ -97,7 +97,9 @@ class _Gltf:
       out = out.astype(np.float32) / np.iinfo(dtype).max
     return out if ncomp > 1 else out[:, 0]
 
-  def image(self, texture_index: int) -> Image.Image:
+  def image(self, texture_index: int | None) -> Image.Image:
+    if texture_index is None:
+      raise ValueError(f"{self.path}: texture reference without an index")
     image = self.doc.images[self.doc.textures[texture_index].source]
     if image.bufferView is not None:
       return Image.open(io.BytesIO(self._view_bytes(image.bufferView)))
@@ -169,13 +171,13 @@ class _Converter:
       return None
     mr_img = np.asarray(self.gltf.image(mr.index).convert("RGB")) if mr else None
     occ_img = np.asarray(self.gltf.image(occ.index).convert("RGB")) if occ else None
-    shape = (mr_img if mr_img is not None else occ_img).shape
+    shape = next(img for img in (mr_img, occ_img) if img is not None).shape
     orm = np.full(shape, 255, dtype=np.uint8)
     if mr_img is not None:
       orm[..., 1:] = mr_img[..., 1:]
-    if occ_img is not None:
+    if occ is not None and occ_img is not None:
       if occ_img.shape != shape:
-        occ_img = np.asarray(Image.fromarray(occ_img).resize((shape[1], shape[0]), Image.BILINEAR))
+        occ_img = np.asarray(Image.fromarray(occ_img).resize((shape[1], shape[0]), Image.Resampling.BILINEAR))
       strength = occ.strength if occ.strength is not None else 1.0
       orm[..., 0] = np.clip(255.0 - strength * (255.0 - occ_img[..., 0]), 0, 255).astype(np.uint8)
     return self._save_texture(f"mat{index}_orm", Image.fromarray(orm), "linear")
@@ -240,6 +242,8 @@ class _Converter:
       print(f"  skipping mesh {mesh_index} primitive {prim_index}: mode {prim.mode} is not TRIANGLES")
       return
     attr = prim.attributes
+    if attr.POSITION is None:
+      raise ValueError(f"mesh {mesh_index} primitive {prim_index} has no POSITION attribute")
     pos = self.gltf.accessor(attr.POSITION).astype(np.float64)
     normal = self.gltf.accessor(attr.NORMAL).astype(np.float64) if attr.NORMAL is not None else None
     uv = self.gltf.accessor(attr.TEXCOORD_0).astype(np.float64) if attr.TEXCOORD_0 is not None else None

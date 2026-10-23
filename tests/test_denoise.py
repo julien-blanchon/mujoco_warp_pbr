@@ -21,7 +21,7 @@ import pytest
 import mujoco_warp_pbr as mjpbr
 
 # Exposure 1: radiance is display-relative, so the emissive sphere is about as bright as the sky.
-_PATH = dict(tier=mjpbr.Tier.PATH, render_hdr=True, cam_res=(64, 64), ev100=float(np.log2(1.0 / 1.2)))
+_PATH = {"tier": mjpbr.Tier.PATH, "render_hdr": True, "cam_res": (64, 64), "ev100": float(np.log2(1.0 / 1.2))}
 
 # A checkered rough floor and an emissive sphere under a random environment: noisy at low sample
 # counts, with texture and emission the filter must preserve.
@@ -59,6 +59,7 @@ def test_zero_iterations_is_identity(scene):
   np.testing.assert_allclose(passthrough.rgb(), raw.rgb(), atol=1.5 / 255)
 
 
+@pytest.mark.slow
 def test_reduces_error(scene):
   reference = scene(_XML, envmap=_env(), envmap_intensity=1.0, path_samples=2048, **_PATH).render().hdr()
   raw = scene(_XML, envmap=_env(), envmap_intensity=1.0, path_samples=4, **_PATH).render().hdr()

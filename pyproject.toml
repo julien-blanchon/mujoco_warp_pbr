@@ -12,7 +12,8 @@ authors = [{name = "Julien Blanchon"}]
 requires-python = ">=3.10"
 dependencies = [
     "mujoco>=3.13.0",
-    "mujoco-warp",
+    # The renderer builds on mujoco_warp._src internals: pinned to a revision in [tool.uv.sources].
+    "mujoco-warp>=3.16.0",
     "numpy",
     "warp-lang>=1.15",
 ]
@@ -61,8 +62,10 @@ indent-width = 2
 extend-exclude = ["context", "*.ipynb", "research/optix_poc"]
 
 [tool.ruff.lint]
-select = ["D", "I", "W", "F401"]
-ignore = ["D100", "D103"]
+select = ["D", "I", "W", "E", "F", "B", "UP", "RUF", "BLE", "C4", "PLW1510"]
+# UP018 (native literals) and RUF046 (int of int) would rewrite Warp kernel code, where
+# float(x) / int(x) casts are typed DSL calls.
+ignore = ["D100", "D103", "E741", "UP018", "RUF001", "RUF002", "RUF003", "RUF046"]
 
 [tool.ruff.lint.isort]
 force-single-line = true
@@ -81,6 +84,9 @@ convention = "google"
 "tests/*" = ["D"]
 "benchmarks/*" = ["D"]
 "tools/*" = ["D"]
+# TODO: remove after the library pass (rules added with the benchmark / tooling pass).
+"mujoco_warp_pbr/**" = ["B905", "BLE001", "C401", "F841", "RUF005", "RUF059", "UP006", "UP035", "UP045"]
+
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -88,6 +94,9 @@ docstring-code-line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "newton-pbr/tests"]
+# The benchmark scripts and tools import their siblings as top-level modules.
+pythonpath = ["benchmarks", "tools"]
+markers = ["slow: heavy path-traced references (deselect with -m 'not slow')"]
 
 [tool.setuptools.packages.find]
 include = ["mujoco_warp_pbr*"]
@@ -97,11 +106,11 @@ include = ["mujoco_warp_pbr*"]
 # indexing, vector arithmetic and struct annotations, so those rules are off. MuJoCo ships no stubs
 # for its extension modules.
 [tool.ty.environment]
-extra-paths = ["benchmarks", "tools", "newton-pbr"]
+extra-paths = ["benchmarks", "tools", "tools/hf", "newton-pbr"]
 
 [tool.ty.analysis]
 replace-imports-with-any = ["mujoco", "mujoco.**"]
-allowed-unresolved-imports = ["pxr.**", "newton.**", "newton", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "trimesh", "flip_evaluator"]
+allowed-unresolved-imports = ["pxr.**", "newton.**", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "flip_evaluator"]
 
 [tool.ty.src]
 exclude = ["research/optix_poc", "context"]
@@ -113,10 +122,10 @@ not-iterable = "ignore"
 unsupported-operator = "ignore"
 
 [tool.pyrefly]
-search-path = [".", "benchmarks", "tools", "newton-pbr"]
+search-path = [".", "benchmarks", "tools", "tools/hf", "newton-pbr"]
 project-excludes = ["research/optix_poc", "context", "**/.venv"]
 replace-imports-with-any = ["mujoco", "mujoco.*"]
-ignore-missing-imports = ["pxr.*", "newton", "newton.*", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "trimesh", "flip_evaluator"]
+ignore-missing-imports = ["pxr.*", "newton.*", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "flip_evaluator"]
 
 [tool.pyrefly.errors]
 bad-index = "ignore"

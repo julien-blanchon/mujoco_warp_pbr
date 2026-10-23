@@ -205,7 +205,7 @@ def test_graph_capture_matches_eager(samples_per_pixel):
     wp.synchronize()  # before the pageable copies of _outputs (see PbrRenderContext)
     graph = _outputs(rc)
     assert (eager[2][..., 0] == 6).sum() > 20  # the moving mesh is in view
-    for a, b in zip(eager, graph):
+    for a, b in zip(eager, graph, strict=False):
       np.testing.assert_array_equal(a, b)
 
 
@@ -294,7 +294,7 @@ def test_reframed_mesh_gas_matches_software():
       </worldbody>
     </mujoco>
   """
-  options = dict(cam_res=(48, 40), render_rgb=True, render_depth=True, render_seg=True)
+  options = {"cam_res": (48, 40), "render_rgb": True, "render_depth": True, "render_seg": True}
   out = _render_both(xml, nworld=2, move=True, **options)
   ref = _render_both(xml, nworld=2, move=True, mesh_bvh_frame="mujoco", **options)["optix"]
   mjm = mujoco.MjModel.from_xml_string(xml)

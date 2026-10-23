@@ -20,7 +20,7 @@ import pytest
 
 import mujoco_warp_pbr as mjpbr
 
-_PATH = dict(tier=mjpbr.Tier.PATH, render_hdr=True)
+_PATH = {"tier": mjpbr.Tier.PATH, "render_hdr": True}
 
 
 def _sphere(metallic: float, roughness: float) -> str:
@@ -36,6 +36,7 @@ def _sphere(metallic: float, roughness: float) -> str:
   """
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("metallic,roughness", [(0.0, 0.3), (1.0, 0.3), (0.0, 1.0), (1.0, 1.0)])
 def test_white_furnace(scene, metallic, roughness):
   white = np.ones((32, 64, 3), dtype=np.float32)
@@ -89,7 +90,7 @@ def test_depth_and_segmentation_match_realtime(scene):
       </worldbody>
     </mujoco>
   """
-  kwargs = dict(cam_res=(40, 32), render_depth=True, render_seg=True)
+  kwargs = {"cam_res": (40, 32), "render_depth": True, "render_seg": True}
   realtime = scene(xml, **kwargs).render()
   path = scene(xml, tier=mjpbr.Tier.PATH, path_samples=2, **kwargs).render()
   np.testing.assert_array_equal(path.rc.base.seg_data.numpy(), realtime.rc.base.seg_data.numpy())

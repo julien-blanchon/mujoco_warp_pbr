@@ -16,7 +16,7 @@ mitsuba 3.9.1.
 
 ## mujoco_warp render baseline
 
-`benchmarks/run.py` from mujoco_warp, `function=render` (physics excluded). frames/s = nworld · nstep /
+MuJoCo Warp's `mjwarp-testspeed` (`mujoco_warp/testspeed.py`), `--function=render` (physics excluded). frames/s = nworld · nstep /
 run_time, one camera per world; per-call times from the event trace.
 
 | Benchmark | nworld | Resolution | frames/s | render / call | refit / call |

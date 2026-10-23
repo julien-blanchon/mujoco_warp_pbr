@@ -35,6 +35,7 @@ results/suite/<run>/ and writes a combined report there.
 
 import argparse
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -45,6 +46,9 @@ from huggingface_hub import inspect_job
 from huggingface_hub import run_job
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "benchmarks"))
+from _common import asset_dir  # noqa: E402 - standard library only, like this script's environment
+
 IMAGE = "nvidia/cuda:12.8.1-devel-ubuntu24.04"
 # Every job ends in one of these stages.
 FINAL = {"COMPLETED", "ERROR", "CANCELED", "DELETED"}
@@ -107,10 +111,7 @@ def main():
   if not args.no_sync_code:
     sync_code(args.bucket)
   if args.sync_assets:
-    import os
-
-    asset_dir = args.asset_dir or Path(os.environ.get("MJPBR_ASSET_DIR", Path.home() / ".cache" / "mujoco_warp_pbr"))
-    sync_assets(args.bucket, asset_dir)
+    sync_assets(args.bucket, args.asset_dir or asset_dir())
 
   jobs = {}
   for flavor in args.flavors:
@@ -133,7 +134,7 @@ def main():
   subprocess.run(_sync_down, check=True)
   runs = sorted(p for p in local.iterdir() if (p / "results.jsonl").exists())
   report = subprocess.run(
-    ["python", str(ROOT / "benchmarks" / "report.py"), *map(str, runs), "--base", str(local)],
+    [sys.executable, str(ROOT / "benchmarks" / "report.py"), *map(str, runs), "--base", str(local)],
     check=True,
     capture_output=True,
     text=True,

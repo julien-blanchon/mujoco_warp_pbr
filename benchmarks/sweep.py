@@ -17,46 +17,47 @@
 
 Presets:
   score:   the fixed set behind the optimisation score: 3 scenes (one per group) × nworld
-           {1024, 4096} × resolution {64, 128}, 1 spp, plus a 2×2-spp point, with per-world camera
-           jitter (identical worlds would overstate ray coherence). The score is the geometric
-           mean of camera-frames/s.
-  compare: mujoco_warp_pbr vs mujoco_warp (shadows on) vs Newton on the same scenes and sizes.
-  renderers: every renderer in two regimes: a single scene (1 world, 128² and 256²) and batches
-           (1024 / 4096 worlds at 64², 1024 at 128²). MuJoCo's OpenGL renderer and Mitsuba render
-           sequentially, so their batch figures are per-image throughput.
+           {1024, 4096} × resolution {64, 128}, 1 spp, plus a 2×2-spp point, all with identical
+           cameras in every world. The score is the geometric mean of camera-frames/s. Add
+           `--extra --jitter-camera` for per-world camera jitter (identical worlds overstate ray
+           coherence); the rows in results/score.jsonl were measured without it (their
+           "jitter_camera" field is false or absent).
   tune:    kernel options per GPU (register cap, block size, ordered traversal) on the score
            scenes at 4096 worlds, 64², with camera jitter.
   scaling: frames/s against batch size (1 to 32768 worlds at 64², 1 to 8192 at 128²) for
            mujoco_warp_pbr and mujoco_warp (shadows on).
 
+Comparisons between renderers are benchmarks/suite.py's job.
+
 Usage:
-  python benchmarks/sweep.py --preset score --out results/score.jsonl [--label NAME]
+  python benchmarks/sweep.py --preset score --out results/score.jsonl [--label NAME] [--extra ...]
 """
 
 import argparse
 import json
 import math
-import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import _common
 
 HERE = Path(__file__).resolve().parent
 # On a shared GPU, wait for other users' work to finish instead of benchmarking under contention.
 BUSY_RETRIES = 60
 BUSY_WAIT_S = 30
 SCORE_SCENES = ["material_grid", "primitives", "damaged_helmet"]
-ENVMAP = "studio_small_09_1k.hdr"
+PRESETS = ["score", "tune", "scaling"]
 
 
 def _envmap_option() -> list[str]:
-  asset_dir = Path(os.environ.get("MJPBR_ASSET_DIR", Path.home() / ".cache" / "mujoco_warp_pbr"))
-  path = asset_dir / "hdri" / ENVMAP
-  return ["--set", f"envmap={json.dumps(str(path))}"] if path.exists() else []
+  """--set envmap=hdri/<name> (asset-relative, resolved by bench.py) if the HDRI is downloaded."""
+  return ["--set", _common.ENVMAP_OPTION] if _common.envmap_available() else []
 
 
 def configurations(preset: str) -> list[list[str]]:
+  """bench.py argument lists of a preset."""
   configs = []
   if preset == "score":
     for scene in SCORE_SCENES:
@@ -66,13 +67,6 @@ def configurations(preset: str) -> list[list[str]]:
     configs.append(
       ["--scene", "damaged_helmet", "--nworld", "1024", "--res", "64", "--set", "samples_per_pixel=2", *_envmap_option()]
     )
-  elif preset == "compare":
-    for scene in SCORE_SCENES + ["flight_helmet"]:
-      for nworld, res in ((1024, 64), (4096, 64), (1024, 128)):
-        size = ["--scene", scene, "--nworld", str(nworld), "--res", str(res)]
-        configs.append([*size, "--renderer", "pbr", *_envmap_option()])
-        configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
-        configs.append([*size, "--renderer", "newton"])
   elif preset == "tune":
     for scene in SCORE_SCENES:
       for regs in (0, 96, 128):
@@ -82,24 +76,6 @@ def configurations(preset: str) -> list[list[str]]:
             configs.append(
               ["--scene", scene, "--nworld", "4096", "--res", "64", "--jitter-camera", *options, *_envmap_option()]
             )
-  elif preset == "renderers":
-    sizes = [(1, 128), (1, 256), (1024, 64), (4096, 64), (1024, 128)]
-    for scene in ["material_grid", "primitives", "damaged_helmet"]:
-      for nworld, res in sizes:
-        size = ["--scene", scene, "--nworld", str(nworld), "--res", str(res)]
-        configs.append([*size, "--renderer", "pbr", *_envmap_option()])
-        configs.append([*size, "--renderer", "pbr", "--set", "tier=1", "--set", "path_samples=16", *_envmap_option()])
-        configs.append([*size, "--renderer", "mjwarp", "--set", "use_shadows=true"])
-        configs.append([*size, "--renderer", "newton"])
-        if nworld == 4096:
-          continue  # sequential renderers: same per-image rate as 1024 worlds
-        # Sequential renderers: a few timed images suffice (their rate does not depend on nworld).
-        sequential = ["--iters", "2", "--repeats", "3", "--sequential-frames", "16"]
-        configs.append([*size, "--renderer", "mujoco", *sequential])
-        # Mitsuba's exporter has no capsules / cylinders.
-        if scene != "primitives":
-          for spp in (16, 256):
-            configs.append([*size, "--renderer", "mitsuba", "--mitsuba-spp", str(spp), *sequential, *_envmap_option()])
   elif preset == "scaling":
     sizes = [(n, 64) for n in (1, 4, 16, 64, 256, 1024, 4096, 16384, 32768)]
     sizes += [(n, 128) for n in (1, 16, 256, 1024, 4096, 8192)]
@@ -118,7 +94,7 @@ def run_bench(config: list[str]) -> dict | None:
   GPU) and returns its JSON row, or None on failure."""
   cmd = [sys.executable, str(HERE / "bench.py"), *config]
   for _ in range(BUSY_RETRIES):
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if "GPU in use" not in result.stderr:
       break
     time.sleep(BUSY_WAIT_S)
@@ -136,7 +112,7 @@ def score(rows: list[dict]) -> float:
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--preset", choices=["score", "compare", "renderers", "scaling", "tune"], default="score")
+  parser.add_argument("--preset", choices=PRESETS, default="score")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--label", default="", help="tag stored with every row (e.g. an experiment name)")
   parser.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="arguments appended to every bench.py call")

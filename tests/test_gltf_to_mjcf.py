@@ -16,17 +16,15 @@
 """Tests for tools/gltf_to_mjcf.py on a synthetic glTF quad."""
 
 import io
-import sys
 from pathlib import Path
 
 import mujoco
 import numpy as np
-import pygltflib
 import pytest
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from gltf_to_mjcf import convert  # noqa: E402
+pygltflib = pytest.importorskip("pygltflib", reason="needs the bench extra")
+from gltf_to_mjcf import convert  # noqa: E402 - after the importorskip
 
 
 def _png(rgb) -> bytes:
