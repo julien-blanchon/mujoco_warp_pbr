@@ -65,6 +65,10 @@ CURVE_TYPES = (int(GeomType.SPHERE), int(GeomType.CAPSULE))
 CUSTOM_TYPES = (int(GeomType.ELLIPSOID), int(GeomType.CYLINDER))
 # Relative padding of the custom-primitive bounds (avoids losing grazing hits to rounding).
 _BOUND_PAD = 1.0e-4
+# Ray direction components below this are treated as parallel to the cell's slabs.
+_PARALLEL_EPS = 1.0e-20
+# Relative distance by which the analytic curve hit may differ from OptiX's (`curve_hit`).
+_CURVE_HIT_TOL = 1.0e-3
 
 
 @wp.func
@@ -133,7 +137,7 @@ def clip_to_cell(frame: wp.array[wp.vec3], origin: wp.vec3, direction: wp.vec3, 
   t1 = max_dist
   for k in range(3):
     dk = direction[k]
-    if wp.abs(dk) < 1.0e-20:
+    if wp.abs(dk) < wp.static(_PARALLEL_EPS):
       if origin[k] < lower[k] or origin[k] > upper[k]:
         t0 = 1.0
         t1 = 0.0
@@ -146,8 +150,46 @@ def clip_to_cell(frame: wp.array[wp.vec3], origin: wp.vec3, direction: wp.vec3, 
   return wp.vec2(t0, t1)
 
 
+@wp.func
+def world_geom(index: int, geoms: wp.array[int]) -> Tuple[int, int]:
+  """(world, geom) of primitive `world · len(geoms) + k` (geom geoms[k]) of a world-space GAS."""
+  n = geoms.shape[0]
+  worldid = index // n
+  return worldid, geoms[index - worldid * n]
+
+
+@wp.func
+def geom_pose(geo: Geometry, worldid: int, gi: int) -> Tuple[wp.vec3, wp.mat33, wp.vec3]:
+  """Position on the world's cell, rotation and size of geom gi of world worldid."""
+  pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
+  return pos, geo.geom_xmat[worldid, gi], geo.geom_size[worldid % geo.geom_size.shape[0], gi]
+
+
 def _plane_vector(plane_ids: Tuple[int, ...]):
   return wp.types.vector(length=max(len(plane_ids), 1), dtype=wp.int32)(*(plane_ids or (0,)))
+
+
+def _make_plane_hit(cull_backfaces: bool) -> wp.Function:
+  @wp.func
+  def plane_hit(geo: Geometry, worldid: int, gi: int, origin: wp.vec3, direction: wp.vec3) -> Tuple[float, wp.vec3]:
+    """Distance (< 0: no hit) and normal of plane gi; transparent planes are not hit."""
+    d = float(-1.0)
+    n = wp.vec3(0.0)
+    rgba, _ = _geom_rgba(geo.geom_matid, geo.geom_rgba, geo.mat_rgba, worldid, gi)
+    if rgba[3] != 0.0:
+      d, n = ray_plane(
+        geo.geom_xpos[worldid, gi],
+        geo.geom_xmat[worldid, gi],
+        geo.geom_size[worldid % geo.geom_size.shape[0], gi],
+        origin,
+        direction,
+      )
+      if wp.static(cull_backfaces):
+        if d >= 0.0 and wp.dot(direction, n) > 0.0:
+          d = -1.0
+    return d, n
+
+  return plane_hit
 
 
 def make_trace(
@@ -170,6 +212,7 @@ def make_trace(
   """
   nplane = len(plane_ids)
   planes = _plane_vector(plane_ids)
+  plane_hit = _make_plane_hit(cull_backfaces)
   flags = wp.uint32(closest_ray_flags)
 
   @wp.func
@@ -212,19 +255,7 @@ def make_trace(
     if wp.static(nplane > 0):
       for k in range(wp.static(nplane)):
         gi = planes[k]
-        rgba, _ = _geom_rgba(geo.geom_matid, geo.geom_rgba, geo.mat_rgba, worldid, gi)
-        if rgba[3] == 0.0:
-          continue
-        d, n = ray_plane(
-          geo.geom_xpos[worldid, gi],
-          geo.geom_xmat[worldid, gi],
-          geo.geom_size[worldid % geo.geom_size.shape[0], gi],
-          origin,
-          direction,
-        )
-        if wp.static(cull_backfaces):
-          if d >= 0.0 and wp.dot(direction, n) > 0.0:
-            d = -1.0
+        d, n = plane_hit(geo, worldid, gi, origin, direction)
         # Ties go to the higher geom index, like MuJoCo Warp.
         tol = RAY_TOL_REL * wp.max(hit.dist, 1.0)
         closer = (d < hit.dist - tol) or (wp.abs(d - hit.dist) <= tol and (hit.geom_id < 0 or gi > hit.geom_id))
@@ -242,21 +273,9 @@ def make_trace(
   def trace_any(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> bool:
     if wp.static(nplane > 0):
       for k in range(wp.static(nplane)):
-        gi = planes[k]
-        rgba, _ = _geom_rgba(geo.geom_matid, geo.geom_rgba, geo.mat_rgba, worldid, gi)
-        if rgba[3] != 0.0:
-          d, n = ray_plane(
-            geo.geom_xpos[worldid, gi],
-            geo.geom_xmat[worldid, gi],
-            geo.geom_size[worldid % geo.geom_size.shape[0], gi],
-            origin,
-            direction,
-          )
-          if wp.static(cull_backfaces):
-            if d >= 0.0 and wp.dot(direction, n) > 0.0:
-              d = -1.0
-          if d >= 0.0 and d < max_dist:
-            return True
+        d, _ = plane_hit(geo, worldid, planes[k], origin, direction)
+        if d >= 0.0 and d < max_dist:
+          return True
     if wp.static(has_instances):
       span = clip_to_cell(geo.rt_frame, origin, direction, max_dist)
       if span[0] <= span[1]:
@@ -275,16 +294,11 @@ def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> Tuple[float, wp.vec3,
   OptiX's hit (it should not), keeps OptiX's distance with the analytic normal there. Returns
   (distance, world normal, world · ngeom + geom).
   """
-  index = wp.mjpbr_optix_primitive_index()
-  ncurve = curve_geom.shape[0]
-  worldid = index // ncurve
-  gi = curve_geom[index - worldid * ncurve]
+  worldid, gi = world_geom(wp.mjpbr_optix_primitive_index(), curve_geom)
   pnt = wp.mjpbr_optix_world_ray_origin()
   vec = wp.mjpbr_optix_world_ray_direction()
   t = wp.mjpbr_optix_ray_tmax()
-  pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
-  mat = geo.geom_xmat[worldid, gi]
-  size = geo.geom_size[worldid % geo.geom_size.shape[0], gi]
+  pos, mat, size = geom_pose(geo, worldid, gi)
   capsule = geo.geom_type[gi] == int(GeomType.CAPSULE)
   d = float(-1.0)
   n = wp.vec3(0.0)
@@ -292,7 +306,7 @@ def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> Tuple[float, wp.vec3,
     d, n = ray_capsule(pos, mat, size, pnt, vec)
   else:
     d, n = ray_sphere(pos, size[0] * size[0], pnt, vec)
-  if d < 0.0 or wp.abs(d - t) > 1.0e-3 * wp.max(t, size[0]):
+  if d < 0.0 or wp.abs(d - t) > wp.static(_CURVE_HIT_TOL) * wp.max(t, size[0]):
     axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
     p = pnt + t * vec
     s = float(0.0)
@@ -315,16 +329,12 @@ def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
     index = wp.mjpbr_optix_primitive_index()
     d = float(-1.0)
     n = wp.vec3(0.0)
-    nprim = prim_geom.shape[0]
-    worldid = index // nprim
-    gi = prim_geom[index - worldid * nprim]
+    worldid, gi = world_geom(index, prim_geom)
     if prim_visible[index] == 0:
       return d, n, 0
     pnt = wp.mjpbr_optix_world_ray_origin()
     vec = wp.mjpbr_optix_world_ray_direction()
-    pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
-    mat = geo.geom_xmat[worldid, gi]
-    size = geo.geom_size[worldid % geo.geom_size.shape[0], gi]
+    pos, mat, size = geom_pose(geo, worldid, gi)
     if wp.static(gtype == int(GeomType.ELLIPSOID)):
       d, n = ray_ellipsoid(pos, mat, size, pnt, vec)
     else:

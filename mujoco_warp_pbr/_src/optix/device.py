@@ -19,6 +19,7 @@
 payload layouts and registered with Warp's experimental external-compilation API (Warp >= 1.18)
 together with the launch-index, ray and hit accessors the programs need. The glue is a CUDA
 preamble that includes `<optix_device.h>`; `build_options` adds the OptiX SDK include directory.
+Kernels call them as `wp.mjpbr_optix_<name>`.
 
 Payload layout of a closest-hit trace (6 registers):
   p0: hit distance (float bits), p1: instance id (0xffffffff on a miss), p2: primitive index,
@@ -31,7 +32,7 @@ An occlusion trace uses one register: 1 if anything is hit, 0 after the miss pro
 import ctypes
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import warp as wp
 
@@ -102,8 +103,6 @@ __device__ inline void closesthit_custom() {
   optixSetPayload_5(optixGetAttribute_2());
 }
 
-__device__ inline int instance_id() { return int(optixGetInstanceId()); }
-__device__ inline float ray_tmin() { return optixGetRayTmin(); }
 __device__ inline float ray_tmax() { return optixGetRayTmax(); }
 
 __device__ inline int primitive_index() { return int(optixGetPrimitiveIndex()); }
@@ -149,45 +148,40 @@ class _TraceResult(ctypes.Structure):
   ]
 
 
+# Whether this Warp has the external-compilation API the OptiX programs are built with (also
+# used by the ordered software traversal, `traverse.py`).
 AVAILABLE = hasattr(wp, "build_experimental") and hasattr(wp, "ModuleBuildOptions")
+# Why not (None when AVAILABLE).
+UNAVAILABLE_REASON: Optional[str] = None if AVAILABLE else "Warp >= 1.18 is required"
 
 if AVAILABLE:
-  _B = wp.build_experimental
-  _B.add_native_type(
+  wp.build_experimental.add_native_type(
     _TraceResult,
     native_name="mjpbr_optix::TraceResult",
     fields={"t": float, "instance": wp.int32, "primitive": wp.int32, "a": float, "b": float, "c": float},
   )
-  _RAY = {"handle": wp.uint64, "o": wp.vec3, "d": wp.vec3, "tmin": float, "tmax": float}
-  _B.add_builtin("mjpbr_optix_launch_index", {}, int, native_name="mjpbr_optix::launch_index")
-  _B.add_builtin(
-    "mjpbr_optix_trace_closest",
-    {**_RAY, "ray_flags": wp.uint32},
-    _TraceResult,
-    native_name="mjpbr_optix::trace_closest",
-  )
-  _B.add_builtin("mjpbr_optix_trace_any", _RAY, wp.bool, native_name="mjpbr_optix::trace_any")
-  _B.add_builtin("mjpbr_optix_miss", {}, None, native_name="mjpbr_optix::miss")
-  _B.add_builtin("mjpbr_optix_closesthit_triangle", {}, None, native_name="mjpbr_optix::closesthit_triangle")
-  _B.add_builtin("mjpbr_optix_closesthit_custom", {}, None, native_name="mjpbr_optix::closesthit_custom")
-  _B.add_builtin("mjpbr_optix_instance_id", {}, int, native_name="mjpbr_optix::instance_id")
-  _B.add_builtin("mjpbr_optix_ray_tmin", {}, float, native_name="mjpbr_optix::ray_tmin")
-  _B.add_builtin("mjpbr_optix_ray_tmax", {}, float, native_name="mjpbr_optix::ray_tmax")
-  _B.add_builtin("mjpbr_optix_primitive_index", {}, int, native_name="mjpbr_optix::primitive_index")
-  _B.add_builtin("mjpbr_optix_world_ray_origin", {}, wp.vec3, native_name="mjpbr_optix::world_ray_origin")
-  _B.add_builtin("mjpbr_optix_world_ray_direction", {}, wp.vec3, native_name="mjpbr_optix::world_ray_direction")
-  _B.add_builtin(
-    "mjpbr_optix_set_hit",
-    {"t": float, "code": int, "primitive": int, "n": wp.vec3},
-    None,
-    native_name="mjpbr_optix::set_hit",
-  )
-  _B.add_builtin(
-    "mjpbr_optix_report_intersection",
-    {"t": float, "n": wp.vec3, "code": int},
-    wp.bool,
-    native_name="mjpbr_optix::report_intersection",
-  )
+
+
+_RAY = {"handle": wp.uint64, "o": wp.vec3, "d": wp.vec3, "tmin": float, "tmax": float}
+# Builtin `wp.mjpbr_optix_<name>` -> (input types, return type) of `mjpbr_optix::<name>` (preamble).
+_BUILTINS: dict[str, tuple[dict, Any]] = {
+  "launch_index": ({}, int),
+  "trace_closest": ({**_RAY, "ray_flags": wp.uint32}, _TraceResult),
+  "trace_any": (_RAY, wp.bool),
+  "miss": ({}, None),
+  "closesthit_triangle": ({}, None),
+  "closesthit_custom": ({}, None),
+  "ray_tmax": ({}, float),
+  "primitive_index": ({}, int),
+  "world_ray_origin": ({}, wp.vec3),
+  "world_ray_direction": ({}, wp.vec3),
+  "set_hit": ({"t": float, "code": int, "primitive": int, "n": wp.vec3}, None),
+  "report_intersection": ({"t": float, "n": wp.vec3, "code": int}, wp.bool),
+}
+
+if AVAILABLE:
+  for _name, (_inputs, _value_type) in _BUILTINS.items():
+    wp.build_experimental.add_builtin(f"mjpbr_optix_{_name}", _inputs, _value_type, native_name=f"mjpbr_optix::{_name}")
 
 
 def include_dir() -> Optional[Path]:
