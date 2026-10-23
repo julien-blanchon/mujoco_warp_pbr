@@ -67,7 +67,7 @@ mujoco-warp = {git = "https://github.com/google-deepmind/mujoco_warp", rev = "6c
 [tool.ruff]
 line-length = 128
 indent-width = 2
-extend-exclude = ["context", "*.ipynb", "research/optix_poc"]
+extend-exclude = ["context", "*.ipynb"]
 
 [tool.ruff.lint]
 select = ["D", "I", "W", "E", "F", "B", "UP", "RUF", "BLE", "C4", "PLW1510"]
@@ -115,7 +115,7 @@ include = ["mujoco_warp_pbr*"]
 [tool.pyrefly]
 preset = "default"
 search-path = [".", "benchmarks", "tools", "tools/hf", "newton-pbr"]
-project-excludes = ["research/optix_poc", "context", "**/.venv"]
+project-excludes = ["context", "**/.venv"]
 # Optional packages without types: USD (compiled), OptiX / ovrtx bindings (not on PyPI), and
 # huggingface_hub (declared only in the inline metadata of the tools/hf scripts).
 ignore-missing-imports = ["pxr.*", "optix", "ovrtx", "huggingface_hub"]
