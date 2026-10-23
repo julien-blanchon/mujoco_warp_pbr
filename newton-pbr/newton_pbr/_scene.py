@@ -133,13 +133,34 @@ def default_lights() -> list[Light]:
   ]
 
 
+@dataclasses.dataclass(frozen=True)
+class Checkerboard:
+  """Grey checkerboard texture of `SensorCamera.assign_checkerboard_material` (Newton's colours).
+
+  Attributes:
+    shapes: indices of the textured shapes.
+    resolution: texture size [px] (square).
+    checker_size: size of a checker square [px].
+  """
+
+  shapes: frozenset[int]
+  resolution: int = 64
+  checker_size: int = 32
+
+  def image(self) -> np.ndarray[[int, int, 3], np.dtype[np.uint8]]:
+    cells = np.arange(self.resolution) // self.checker_size
+    even = (cells[:, None] + cells[None, :]) % 2 == 0
+    grey = np.where(even, 0x80, 0xBF).astype(np.uint8)
+    return np.repeat(grey[..., None], 3, axis=-1)
+
+
 @dataclasses.dataclass
 class SceneMapping:
   """MuJoCo model of the scene plus the shape behind every MuJoCo geom.
 
   Attributes:
     mjm: compiled MuJoCo model (one world)
-    geom_shape: Newton shape index of geom g in world w                    (nworld, ngeom)
+    geom_shape: Newton shape index of geom g in world w (one row with merge_worlds) (nworld, ngeom)
     geom_offset_pos: pose of the MuJoCo geom frame in the Newton shape frame (ngeom, 3)
     geom_offset_quat: (w, x, y, z)                                             (ngeom, 4)
   """
@@ -240,11 +261,24 @@ def _check_worlds(
 
 
 def build_scene(
-  model: newton.Model, lights: list[Light] | None, camera_fovy: float, headlight: Headlight | None = None
+  model: newton.Model,
+  lights: list[Light] | None,
+  camera_fovy: float,
+  headlight: Headlight | None = None,
+  merge_worlds: bool = False,
+  checkerboard: Checkerboard | None = None,
+  load_textures: bool = True,
 ) -> SceneMapping:
-  """Builds the MuJoCo appearance model of a Newton model (worlds must have identical shapes).
+  """Builds the MuJoCo appearance model of a Newton model.
+
+  By default the MuJoCo model holds one world's shapes plus the global ones, and every world
+  must have the same visible shapes (geom_shape maps the geoms to each world's shapes). With
+  `merge_worlds`, it holds the shapes of every world at once (geom_shape has one row), e.g. to
+  show all worlds side by side.
 
   headlight: None (off) or (ambient, diffuse, specular) RGB triples of MuJoCo's headlight.
+  checkerboard: shapes given a grey checkerboard texture (see `Checkerboard`).
+  load_textures: whether mesh textures are loaded.
   """
   shape_world = _required(model.shape_world, "shape_world").numpy()
   # wp.array.numpy() is untyped in the stubs; Newton stores shape types as int32 and scales as vec3.
@@ -265,8 +299,12 @@ def build_scene(
 
   global_shapes = np.flatnonzero(renderable & (shape_world < 0))
   per_world = [np.flatnonzero(renderable & (shape_world == w)) for w in range(nworld)]
-  _check_worlds(model, per_world, shape_type, shape_scale)
-  shapes0 = np.concatenate([per_world[0], global_shapes])
+  if merge_worlds:
+    shapes0 = np.flatnonzero(renderable)
+  else:
+    _check_worlds(model, per_world, shape_type, shape_scale)
+    shapes0 = np.concatenate([per_world[0], global_shapes])
+  checkered = set() if checkerboard is None else set(checkerboard.shapes)
 
   spec = mujoco.MjSpec()
   spec.visual.headlight.active = int(headlight is not None)
@@ -316,12 +354,17 @@ def build_scene(
           mat.roughness = float(source.roughness)
         if source.metallic is not None:
           mat.metallic = float(source.metallic)
-        tex = _add_texture(spec, f"tex{i}", source.texture) if uvs is not None else None
-        if tex is not None:
+        tex = _add_texture(spec, f"tex{i}", source.texture) if uvs is not None and load_textures else None
+        if tex is not None and shape not in checkered:
           mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = tex
           # mujoco-stubs: the MjSpec array setters are ndarray-only; pybind takes any sequence.
           mat.rgba = [1.0, 1.0, 1.0, alpha]  # pyrefly: ignore[bad-argument-type]
           geom.rgba = [1.0, 1.0, 1.0, alpha]  # pyrefly: ignore[bad-argument-type]
+    if shape in checkered and checkerboard is not None:
+      # Multiplies the shape colour, as Newton's checkerboard material does.
+      checker = _add_texture(spec, f"checker{i}", checkerboard.image())
+      if checker is not None:
+        mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = checker
     geom.material = f"mat{i}"
 
   for i, light in enumerate(lights if lights is not None else []):
@@ -345,5 +388,8 @@ def build_scene(
   # that offset relative to the Newton shape frame.
   offset_pos = np.array(mjm.geom_pos, dtype=np.float64).reshape(mjm.ngeom, 3)
   offset_quat = np.array(mjm.geom_quat, dtype=np.float64).reshape(mjm.ngeom, 4)
-  per_world_shapes = [np.concatenate([per_world[w], global_shapes]) for w in range(nworld)]
-  return SceneMapping(mjm, np.stack(per_world_shapes).astype(np.int32), offset_pos, offset_quat)
+  if merge_worlds:
+    geom_shape = shapes0[None].astype(np.int32)
+  else:
+    geom_shape = np.stack([np.concatenate([per_world[w], global_shapes]) for w in range(nworld)]).astype(np.int32)
+  return SceneMapping(mjm, geom_shape, offset_pos, offset_quat)

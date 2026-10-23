@@ -19,4 +19,5 @@ from newton_pbr._scene import Light as Light
 from newton_pbr._scene import build_scene as build_scene
 from newton_pbr._scene import default_lights as default_lights
 from newton_pbr._scene import lights_from_mujoco as lights_from_mujoco
+from newton_pbr.camera import SensorCamera as SensorCamera
 from newton_pbr.sensor import SensorPbrCamera as SensorPbrCamera

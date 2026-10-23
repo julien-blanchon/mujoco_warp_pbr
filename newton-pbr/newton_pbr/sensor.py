@@ -26,6 +26,8 @@ import numpy as np
 import warp as wp
 
 import mujoco_warp_pbr as mjpbr
+from newton_pbr._render import ScenePoses
+from newton_pbr._render import put_scene
 from newton_pbr._scene import Headlight
 from newton_pbr._scene import Light
 from newton_pbr._scene import build_scene
@@ -41,37 +43,6 @@ _ALPHA_GREEN = wp.constant(wp.uint32(0xFF00FF00))
 _NO_SHAPE = wp.constant(wp.uint32(0xFFFFFFFF))
 # create_render_context options the sensor sets itself.
 _RESERVED_OPTIONS = ("nworld", "cam_res", "render_rgb", "render_hdr")
-
-
-@wp.kernel(enable_backward=False)
-def _sync_poses(
-  body_q: wp.array1d[wp.transformf],
-  shape_body: wp.array1d[wp.int32],
-  shape_transform: wp.array1d[wp.transformf],
-  geom_shape: wp.array2d[wp.int32],
-  offset_pos: wp.array1d[wp.vec3],
-  offset_quat: wp.array1d[wp.quat],
-  camera_transforms: wp.array1d[wp.transformf],
-  geom_xpos: wp.array2d[wp.vec3],
-  geom_xmat: wp.array2d[wp.mat33],
-  cam_xpos: wp.array2d[wp.vec3],
-  cam_xmat: wp.array2d[wp.mat33],
-):
-  """World-space geom poses of world (view) v from Newton's body transforms; camera pose."""
-  view, geom = wp.tid()
-  shape = geom_shape[view, geom]
-  x = shape_transform[shape]
-  body = shape_body[shape]
-  if body >= 0:
-    x = wp.transform_multiply(body_q[body], x)
-  x = wp.transform_multiply(x, wp.transform(offset_pos[geom], offset_quat[geom]))
-  geom_xpos[view, geom] = wp.transform_get_translation(x)
-  geom_xmat[view, geom] = wp.quat_to_matrix(wp.transform_get_rotation(x))
-  if geom == 0:
-    # Newton and MuJoCo cameras both look along -Z with +Y up.
-    c = camera_transforms[view]
-    cam_xpos[view, 0] = wp.transform_get_translation(c)
-    cam_xmat[view, 0] = wp.quat_to_matrix(wp.transform_get_rotation(c))
 
 
 @wp.kernel(enable_backward=False)
@@ -151,10 +122,6 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
   height: Int[H]
   nworld: int
   rc: mjpbr.PbrRenderContext[int]
-  # Newton shape index of geom g in world w (nworld, ngeom); MuJoCo geom frame in the shape frame.
-  _geom_shape: wp.array[wp.int32, [int, int]]
-  _offset_pos: wp.array[wp.vec3, [int]]
-  _offset_quat: wp.array[wp.quat, [int]]
   # Placeholders bound to the outputs update() is not asked for.
   _dummy_u: wp.array[wp.uint32, [1, 1, 1]]
   _dummy_f: wp.array[float, [1, 1, 1]]
@@ -204,10 +171,8 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
     mjm = self.scene.mjm
     self.nworld = max(int(model.world_count), 1)
     self.mjm = mjm
-    self.m = mjw.put_model(mjm)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    self.d = mjw.put_data(mjm, mjd, nworld=self.nworld)
+    self.m, self.d = put_scene(self.scene, self.nworld, model.device)
+    self._poses = ScenePoses(model, self.scene)
     if envmap is not None:
       render_options.setdefault("envmap", envmap)
     render_options.setdefault("render_depth", True)
@@ -216,11 +181,6 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
       mjm, nworld=self.nworld, cam_res=(width, height), render_rgb=True, render_hdr=True, **render_options
     )
     device = model.device
-    self._geom_shape = wp.array(self.scene.geom_shape, dtype=wp.int32, device=device)
-    self._offset_pos = wp.array(self.scene.geom_offset_pos.astype(np.float32), dtype=wp.vec3, device=device)
-    # MuJoCo quaternions are (w, x, y, z), Warp's (x, y, z, w).
-    q = self.scene.geom_offset_quat[:, [1, 2, 3, 0]].astype(np.float32)
-    self._offset_quat = wp.array(q, dtype=wp.quat, device=device)
     # Placeholders for the outputs not requested in update.
     self._dummy_u = wp.empty((1, 1, 1), dtype=wp.uint32, device=device)
     self._dummy_f = wp.empty((1, 1, 1), dtype=float, device=device)
@@ -278,21 +238,7 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
     for name, (image, dtype) in images.items():
       if image is not None:
         self._check_image(name, image, dtype)
-    ngeom = self.mjm.ngeom
-    wp.launch(
-      _sync_poses,
-      dim=(self.nworld, ngeom),
-      inputs=[
-        state.body_q,
-        self.model.shape_body,
-        self.model.shape_transform,
-        self._geom_shape,
-        self._offset_pos,
-        self._offset_quat,
-        camera_transforms,
-      ],
-      outputs=[self.d.geom_xpos, self.d.geom_xmat, self.d.cam_xpos, self.d.cam_xmat],
-    )
+    self._poses.sync(state, camera_transforms, self.d)
     if self.rc.traversal != "optix":  # OptiX updates its own structures in render
       mjw.refit_bvh(self.m, self.d, self.rc.base)
     mjpbr.render(self.m, self.d, self.rc, seed=seed)
@@ -308,7 +254,7 @@ class SensorPbrCamera[H: IntVar, W: IntVar]:
         base.depth_data,
         base.seg_data,
         self.rc.hdr_data,
-        self._geom_shape,
+        self._poses.geom_shape,
         self._ray_scale,
         color_image is not None,
         depth_image is not None,
