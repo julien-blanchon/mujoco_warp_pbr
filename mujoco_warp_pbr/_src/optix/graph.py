@@ -32,6 +32,15 @@ synchronised it. Everything before the host nodes (instance and parameter writes
 or Python; the worker needs the GIL for its few PyOptiX calls, which it gets whenever the host
 thread waits on the GPU (Warp, PyTorch and NumPy synchronisation release the GIL).
 
+Errors of the worker cannot propagate through `wp.capture_launch`: they are kept and raised by
+`Bridge.raise_error` (the next render, or `mujoco_warp_pbr._src.optix.check`).
+
+Lifetime: a graph holds the addresses of its bridge's semaphores, and may be launched after the
+renderer that captured it was replaced or released. The semaphores are therefore never freed, and
+a closed bridge's worker keeps answering requests without doing any work (the graph then leaves
+the outputs unchanged; `raise_released_error` reports it). Each closed bridge thus keeps one
+idle thread.
+
 Caveat (hence opt-in, `PbrRenderContext.optix_graph_capture`): a synchronous copy to pageable host
 memory (`array.numpy()`) issued while such a graph runs blocks inside the driver holding a lock
 that the worker's kernel launches need, while the copy itself waits for the graph: a deadlock.
@@ -47,21 +56,35 @@ import ctypes
 import sys
 import threading
 import weakref
+from typing import Optional, Protocol
 
 import warp as wp
 
+_SEM_BYTES = 64  # >= sizeof(sem_t)
+_CU_STREAM_NON_BLOCKING = 1
+
 _libs = {}
+# Semaphores of every bridge, never freed: captured graphs hold their addresses.
+_semaphores: list = []
+# First replay of a graph whose bridge was closed, not yet reported.
+_released_error: list[RuntimeError] = []
+
+
+class GraphWork(Protocol):
+  """Owner of a bridge: the OptiX calls of a frame."""
+
+  def graph_work(self, stream: wp.Stream) -> None: ...
 
 
 def available() -> bool:
-  """Whether the bridge can run here (Linux: libc semaphores and libcuda.so)."""
+  """Whether the bridge is supported on this platform (Linux; libcuda.so is loaded on first use)."""
   return sys.platform.startswith("linux")
 
 
-def _load():
+def _load() -> dict:
   if not _libs:
     libc = ctypes.CDLL(None)
-    for name in ("sem_init", "sem_post", "sem_wait", "sem_destroy"):
+    for name in ("sem_init", "sem_post", "sem_wait"):
       getattr(libc, name).argtypes = [ctypes.c_void_p] + ([ctypes.c_int, ctypes.c_uint] if name == "sem_init" else [])
       getattr(libc, name).restype = ctypes.c_int
     cuda = ctypes.CDLL("libcuda.so.1")
@@ -69,6 +92,8 @@ def _load():
     cuda.cuLaunchHostFunc.restype = ctypes.c_int
     cuda.cuStreamCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint]
     cuda.cuStreamCreate.restype = ctypes.c_int
+    cuda.cuStreamDestroy_v2.argtypes = [ctypes.c_void_p]
+    cuda.cuStreamDestroy_v2.restype = ctypes.c_int
     _libs.update(
       libc=libc,
       cuda=cuda,
@@ -78,74 +103,109 @@ def _load():
   return _libs
 
 
+def _semaphore(libc) -> ctypes.Array:
+  sem = ctypes.create_string_buffer(_SEM_BYTES)
+  if libc.sem_init(sem, 0, 0):
+    raise OSError("sem_init failed")
+  _semaphores.append(sem)
+  return sem
+
+
+def raise_released_error() -> None:
+  """Raises (once) if a graph was launched after the OptiX renderer that captured it was closed."""
+  if _released_error:
+    raise _released_error.pop()
+
+
 class Bridge:
   """Runs `owner.graph_work(stream)` on a worker thread when a graph reaches `enqueue`'s point.
 
-  Holds only a weak reference to its owner; `close` (or the owner's collection) stops the worker.
+  Holds only a weak reference to its owner; `close` (or the owner's collection) stops the work.
   """
 
-  _SEM_BYTES = 64  # >= sizeof(sem_t)
-
-  def __init__(self, owner, device: "wp.Device"):
+  def __init__(self, owner: GraphWork, device: wp.Device):
     libs = _load()
     self._libc = libs["libc"]
+    self._cuda = libs["cuda"]
     self._owner = weakref.ref(owner)
     self._device = device
     # Non-blocking: a blocking stream would also be waited on by legacy-stream work, such as the
     # synchronous copies to pageable host memory behind array.numpy().
     with wp.ScopedDevice(device):
       handle = ctypes.c_void_p()
-      result = libs["cuda"].cuStreamCreate(ctypes.byref(handle), 1)  # CU_STREAM_NON_BLOCKING
+      result = self._cuda.cuStreamCreate(ctypes.byref(handle), _CU_STREAM_NON_BLOCKING)
       if result != 0:
         raise RuntimeError(f"cuStreamCreate failed (CUresult {result})")
-      self.stream = wp.Stream(device, cuda_stream=handle.value)
-    self._request = ctypes.create_string_buffer(self._SEM_BYTES)
-    self._done = ctypes.create_string_buffer(self._SEM_BYTES)
-    if self._libc.sem_init(self._request, 0, 0) or self._libc.sem_init(self._done, 0, 0):
-      raise OSError("sem_init failed")
+      self._stream_handle = handle.value
+      self.stream: Optional[wp.Stream] = wp.Stream(device, cuda_stream=handle.value)
+    self._request = _semaphore(self._libc)
+    self._done = _semaphore(self._libc)
+    # Held while the worker runs the owner's work; reentrant: the owner may be collected (and
+    # close its bridge) on the worker thread.
+    self._lock = threading.RLock()
     self._closed = False
-    self.error = None
+    self.error: Optional[BaseException] = None
     self._thread = threading.Thread(target=self._run, name="mujoco_warp_pbr-optix-graph", daemon=True)
     self._thread.start()
 
   def _run(self):
     while True:
       self._libc.sem_wait(self._request)  # ctypes releases the GIL while waiting
-      if self._closed:
-        self._libc.sem_post(self._done)
-        return
+      owner = stream = None
       try:
-        owner = self._owner()
-        if owner is None:
-          raise RuntimeError("the OptiX renderer of a captured graph was released")
-        with wp.ScopedDevice(self._device):
-          owner.graph_work(self.stream)
-          wp.synchronize_stream(self.stream)
-      except BaseException as e:  # reported by the next render; the graph must not hang
+        with self._lock:
+          owner = None if self._closed else self._owner()
+          stream = self.stream
+          if owner is None or stream is None:
+            if not _released_error:
+              _released_error.append(
+                RuntimeError("a CUDA graph was launched after its OptiX renderer was released; its OptiX work was skipped")
+              )
+            continue
+          with wp.ScopedDevice(self._device):
+            owner.graph_work(stream)
+            wp.synchronize_stream(stream)
+      except BaseException as e:  # reported by raise_error; the graph must not hang
         self.error = e
       finally:
+        # No references while idle: collecting the owner closes this bridge (and its stream).
+        stream = None
+        owner = None
         self._libc.sem_post(self._done)
 
-  def enqueue(self, stream: "wp.Stream"):
+  def enqueue(self, stream: wp.Stream) -> None:
     """Records (inside a capture) the host nodes that run the owner's OptiX work."""
+    if self._closed:
+      raise RuntimeError("the OptiX graph bridge is closed")
     libs = _load()
     handle = ctypes.c_void_p(stream.cuda_stream)
     for fn, sem in ((libs["post"], self._request), (libs["wait"], self._done)):
-      result = libs["cuda"].cuLaunchHostFunc(handle, fn, ctypes.addressof(sem))
+      result = self._cuda.cuLaunchHostFunc(handle, fn, ctypes.addressof(sem))
       if result != 0:
         raise RuntimeError(f"cuLaunchHostFunc failed (CUresult {result})")
 
-  def raise_error(self):
-    """Re-raises (once) an error of the worker."""
+  def raise_error(self) -> None:
+    """Re-raises (once) an error of the worker, or of a graph launched after its bridge closed."""
     if self.error is not None:
       error, self.error = self.error, None
       raise RuntimeError("OptiX work of a captured graph failed") from error
+    raise_released_error()
 
-  def close(self):
-    if not self._closed:
+  def close(self) -> None:
+    """Stops running the owner's work (waiting for a running one) and destroys the stream.
+
+    The worker and the semaphores stay, for graphs captured through this bridge (see the module
+    docstring).
+    """
+    with self._lock:
+      if self._closed:
+        return
       self._closed = True
-      self._libc.sem_post(self._request)
-      self._thread.join(timeout=5.0)
+      stream, self.stream = self.stream, None
+      del stream  # unregisters the handle from Warp
+      # Not during a capture (close may run from a collection): the stream is then leaked.
+      if not self._device.is_capturing:
+        self._cuda.cuStreamDestroy_v2(ctypes.c_void_p(self._stream_handle))
 
   def __del__(self):
     try:

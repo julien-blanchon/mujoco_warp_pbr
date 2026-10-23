@@ -24,6 +24,7 @@ be rendered without MuJoCo kinematics.
 
 import dataclasses
 import warnings
+from typing import Any, Literal, NamedTuple, Optional, Sequence
 
 import mujoco
 import newton
@@ -43,9 +44,22 @@ _PRIMITIVES = {
 _MESHES = {int(GeoType.MESH), int(GeoType.CONVEX_MESH), int(GeoType.CONE)}
 # Newton shape colours are display (sRGB) values; MuJoCo rgba is linear for this renderer.
 _DEFAULT_COLOR = (0.7, 0.7, 0.7)
+# Segments of the meshed cone.
+_CONE_SEGMENTS = 32
+
+LightType = Literal["directional", "point", "spot"]
+_LIGHT_NAMES: tuple[LightType, ...] = ("directional", "point", "spot")
+_LIGHT_TYPES: dict[str, Any] = {
+  "directional": mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
+  "point": mujoco.mjtLightType.mjLIGHT_POINT,
+  "spot": mujoco.mjtLightType.mjLIGHT_SPOT,
+}
+
+# (ambient, diffuse, specular) RGB of MuJoCo's headlight.
+Headlight = tuple[Sequence[float], Sequence[float], Sequence[float]]
 
 
-def srgb_to_linear(c: np.ndarray) -> np.ndarray:
+def srgb_to_linear(c: Any) -> np.ndarray:
   c = np.asarray(c, dtype=np.float64)
   return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
@@ -67,7 +81,7 @@ class Light:
     cast_shadow: whether the light casts ray-traced shadows.
   """
 
-  type: str = "directional"
+  type: LightType = "directional"
   pos: tuple = (0.0, 0.0, 3.0)
   dir: tuple = (-0.3, 0.4, -1.0)
   intensity: float = 0.0
@@ -77,17 +91,17 @@ class Light:
   bulb_radius: float = 0.0
   cast_shadow: bool = True
 
+  def __post_init__(self):
+    if self.type not in _LIGHT_TYPES:
+      raise ValueError(f"Light.type must be one of {list(_LIGHT_TYPES)}, got {self.type!r}")
+
 
 def lights_from_mujoco(mjm: mujoco.MjModel, mjd: mujoco.MjData) -> list[Light]:
   """The active lights of a MuJoCo model at state `mjd`.
 
   Keeps the lighting of an MJCF scene loaded into Newton, whose importer drops lights.
   """
-  kinds = {
-    int(mujoco.mjtLightType.mjLIGHT_DIRECTIONAL): "directional",
-    int(mujoco.mjtLightType.mjLIGHT_POINT): "point",
-    int(mujoco.mjtLightType.mjLIGHT_SPOT): "spot",
-  }
+  kinds: dict[int, LightType] = {int(_LIGHT_TYPES[name]): name for name in _LIGHT_NAMES}
   lights = []
   for i in range(mjm.nlight):
     if not mjm.light_active[i] or int(mjm.light_type[i]) not in kinds:
@@ -133,25 +147,34 @@ class SceneMapping:
   geom_offset_quat: np.ndarray
 
 
-def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray):
-  """Vertices, faces, uvs, normals and the Newton Mesh (or None) of a mesh-like shape."""
+class _ShapeMesh(NamedTuple):
+  """Triangle mesh of a mesh-like shape (scaled)."""
+
+  verts: np.ndarray
+  faces: np.ndarray
+  uvs: Optional[np.ndarray]
+  normals: Optional[np.ndarray]
+  mesh: Optional[newton.Mesh]  # the Newton mesh (None for a cone)
+
+
+def _shape_mesh(model: newton.Model, shape: int, gtype: int, scale: np.ndarray) -> _ShapeMesh:
   if gtype == int(GeoType.CONE):
     radius, half_height = float(scale[0]), float(scale[1])
-    n = 32
+    n = _CONE_SEGMENTS
     angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
     ring = np.stack([radius * np.cos(angles), radius * np.sin(angles), np.full(n, -half_height)], axis=1)
     verts = np.concatenate([ring, [[0.0, 0.0, half_height], [0.0, 0.0, -half_height]]])
     faces = [[i, (i + 1) % n, n] for i in range(n)] + [[(i + 1) % n, i, n + 1] for i in range(n)]
-    return verts, np.asarray(faces), None, None, None
+    return _ShapeMesh(verts, np.asarray(faces), None, None, None)
   mesh = model.shape_source[shape]
   verts = np.asarray(mesh.vertices, dtype=np.float64) * scale
   faces = np.asarray(mesh.indices, dtype=np.int64).reshape(-1, 3)
   uvs = None if mesh.uvs is None else np.asarray(mesh.uvs, dtype=np.float64)
   normals = None if mesh.normals is None else np.asarray(mesh.normals, dtype=np.float64)
-  return verts, faces, uvs, normals, mesh
+  return _ShapeMesh(verts, faces, uvs, normals, mesh)
 
 
-def _add_texture(spec: mujoco.MjSpec, name: str, texture) -> str | None:
+def _add_texture(spec: mujoco.MjSpec, name: str, texture: Any) -> Optional[str]:
   """Adds a Newton mesh texture (file path or image array) as a MuJoCo 2D texture."""
   if texture is None:
     return None
@@ -170,7 +193,38 @@ def _add_texture(spec: mujoco.MjSpec, name: str, texture) -> str | None:
   return name
 
 
-def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: float, headlight=None) -> SceneMapping:
+def _same_source(a: Any, b: Any) -> bool:
+  if a is b:
+    return True
+  if a is None or b is None:
+    return False
+  return np.array_equal(np.asarray(a.vertices), np.asarray(b.vertices)) and np.array_equal(
+    np.asarray(a.indices), np.asarray(b.indices)
+  )
+
+
+def _check_worlds(model: newton.Model, per_world: list[np.ndarray], shape_type: np.ndarray, shape_scale: np.ndarray):
+  """Raises unless every world has the same visible shapes as world 0 (type, size, mesh)."""
+  first = per_world[0]
+  for w, shapes in enumerate(per_world[1:], start=1):
+    if len(shapes) != len(first):
+      raise ValueError(
+        f"newton_pbr needs every world to have the same visible shapes: world {w} has {len(shapes)}, world 0 {len(first)}"
+      )
+    for a, b in zip(first, shapes):
+      same = shape_type[a] == shape_type[b] and np.allclose(shape_scale[a], shape_scale[b])
+      if same and int(shape_type[a]) in (int(GeoType.MESH), int(GeoType.CONVEX_MESH)):
+        same = _same_source(model.shape_source[a], model.shape_source[b])
+      if not same:
+        raise ValueError(
+          f"newton_pbr needs every world to have the same visible shapes: shape {b} of world {w} differs "
+          f"from shape {a} of world 0 (type, scale or mesh)"
+        )
+
+
+def build_scene(
+  model: newton.Model, lights: Optional[list[Light]], camera_fovy: float, headlight: Optional[Headlight] = None
+) -> SceneMapping:
   """Builds the MuJoCo appearance model of a Newton model (worlds must have identical shapes).
 
   headlight: None (off) or (ambient, diffuse, specular) RGB triples of MuJoCo's headlight.
@@ -192,8 +246,7 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
 
   global_shapes = np.flatnonzero(renderable & (shape_world < 0))
   per_world = [np.flatnonzero(renderable & (shape_world == w)) for w in range(nworld)]
-  if any(len(s) != len(per_world[0]) for s in per_world):
-    raise ValueError("newton_pbr needs every world to have the same visible shapes")
+  _check_worlds(model, per_world, shape_type, shape_scale)
   shapes0 = np.concatenate([per_world[0], global_shapes])
 
   spec = mujoco.MjSpec()
@@ -201,6 +254,8 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
   if headlight is not None:
     spec.visual.headlight.ambient, spec.visual.headlight.diffuse, spec.visual.headlight.specular = headlight
   spec.compiler.texturedir = ""
+  # One MuJoCo mesh per (Newton mesh, scale): shapes sharing a mesh share it.
+  mesh_names: dict[tuple, str] = {}
   for i, shape in enumerate(shapes0):
     gtype = int(shape_type[shape])
     scale = shape_scale[shape].astype(np.float64)
@@ -216,23 +271,31 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
       else:
         geom.size = scale
     else:
-      verts, faces, uvs, normals, mesh = _shape_mesh(model, shape, gtype, scale)
-      mesh_spec = spec.add_mesh(name=f"mesh{i}", uservert=verts.ravel().tolist(), userface=faces.ravel().tolist())
-      if normals is not None and len(normals) == len(verts):
-        mesh_spec.usernormal = normals.ravel().tolist()
+      shape_mesh = _shape_mesh(model, shape, gtype, scale)
+      uvs = shape_mesh.uvs
       # Per-vertex UVs only: a texture is mapped only when there is one UV per vertex.
-      if uvs is not None and len(uvs) != len(verts):
+      if uvs is not None and len(uvs) != len(shape_mesh.verts):
         uvs = None
-      if uvs is not None:
-        mesh_spec.usertexcoord = uvs.ravel().tolist()
+      source = shape_mesh.mesh
+      key = ("cone" if source is None else id(source), *scale.tolist())
+      if key not in mesh_names:
+        mesh_names[key] = f"mesh{i}"
+        mesh_spec = spec.add_mesh(
+          name=mesh_names[key], uservert=shape_mesh.verts.ravel().tolist(), userface=shape_mesh.faces.ravel().tolist()
+        )
+        normals = shape_mesh.normals
+        if normals is not None and len(normals) == len(shape_mesh.verts):
+          mesh_spec.usernormal = normals.ravel().tolist()
+        if uvs is not None:
+          mesh_spec.usertexcoord = uvs.ravel().tolist()
       geom.type = mujoco.mjtGeom.mjGEOM_MESH
-      geom.meshname = f"mesh{i}"
-      if mesh is not None:
-        if mesh.roughness is not None:
-          mat.roughness = float(mesh.roughness)
-        if mesh.metallic is not None:
-          mat.metallic = float(mesh.metallic)
-        tex = _add_texture(spec, f"tex{i}", mesh.texture) if uvs is not None else None
+      geom.meshname = mesh_names[key]
+      if source is not None:
+        if source.roughness is not None:
+          mat.roughness = float(source.roughness)
+        if source.metallic is not None:
+          mat.metallic = float(source.metallic)
+        tex = _add_texture(spec, f"tex{i}", source.texture) if uvs is not None else None
         if tex is not None:
           mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = tex
           mat.rgba = [1.0, 1.0, 1.0, alpha]
@@ -240,14 +303,9 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
     geom.material = f"mat{i}"
 
   for i, light in enumerate(lights if lights is not None else []):
-    kind = {
-      "directional": mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
-      "point": mujoco.mjtLightType.mjLIGHT_POINT,
-      "spot": mujoco.mjtLightType.mjLIGHT_SPOT,
-    }[light.type]
     spec.worldbody.add_light(
       name=f"light{i}",
-      type=kind,
+      type=_LIGHT_TYPES[light.type],
       pos=list(light.pos),
       dir=list(light.dir),
       diffuse=list(light.color),
@@ -263,10 +321,7 @@ def build_scene(model: newton.Model, lights: list[Light] | None, camera_fovy: fl
   mjm = spec.compile()
   # MuJoCo re-centres mesh vertices on the mesh's inertial frame; the geom pose then carries
   # that offset relative to the Newton shape frame.
-  offset_pos = np.zeros((mjm.ngeom, 3))
-  offset_quat = np.tile([1.0, 0.0, 0.0, 0.0], (mjm.ngeom, 1))
-  for g in range(mjm.ngeom):
-    offset_pos[g] = mjm.geom_pos[g]
-    offset_quat[g] = mjm.geom_quat[g]
+  offset_pos = np.array(mjm.geom_pos, dtype=np.float64).reshape(mjm.ngeom, 3)
+  offset_quat = np.array(mjm.geom_quat, dtype=np.float64).reshape(mjm.ngeom, 4)
   per_world_shapes = [np.concatenate([per_world[w], global_shapes]) for w in range(nworld)]
   return SceneMapping(mjm, np.stack(per_world_shapes).astype(np.int32), offset_pos, offset_quat)

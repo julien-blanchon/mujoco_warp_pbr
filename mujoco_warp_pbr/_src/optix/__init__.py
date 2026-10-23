@@ -23,14 +23,23 @@ SDK headers (github.com/NVIDIA/optix-dev) found through OPTIX_INCLUDE_DIR.
 - `trace.py`: `trace_closest` / `trace_any` over OptiX, world cells, intersection programs.
 - `accel.py`: device context, mesh / primitive GASes and the IAS over all worlds.
 - `launch.py`: programs, pipeline, shader binding table and per-frame launch.
+- `graph.py`: CUDA graph capture of the OptiX calls through a host-function bridge.
 
 Nothing here imports PyOptiX at module import time.
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Iterable, Optional
+
+from mujoco_warp_pbr._src.optix.device import AVAILABLE as AVAILABLE
+from mujoco_warp_pbr._src.optix.device import UNAVAILABLE_REASON as UNAVAILABLE_REASON
+
+if TYPE_CHECKING:
+  import mujoco
+
+  from mujoco_warp_pbr._src.types import PbrRenderContext
 
 
-def unavailable_reason(mjm, enabled_geom_groups, tier: int) -> Optional[str]:
+def unavailable_reason(mjm: "mujoco.MjModel", enabled_geom_groups: Iterable[int], tier: int) -> Optional[str]:
   """None if traversal="optix" can render this model, else the reason it cannot."""
   import warp as wp
 
@@ -38,8 +47,8 @@ def unavailable_reason(mjm, enabled_geom_groups, tier: int) -> Optional[str]:
 
   if tier != Tier.REALTIME:
     return "it only applies to the real-time tier"
-  if not (hasattr(wp, "build_experimental") and hasattr(wp, "ModuleBuildOptions")):
-    return "Warp >= 1.18 is required"
+  if UNAVAILABLE_REASON is not None:
+    return UNAVAILABLE_REASON
   if not wp.get_device().is_cuda:
     return "it needs a CUDA device"
   try:
@@ -56,3 +65,21 @@ def unavailable_reason(mjm, enabled_geom_groups, tier: int) -> Optional[str]:
   if reason is not None:
     return f"the scene has {reason}"
   return None
+
+
+def check(rc: "PbrRenderContext") -> None:
+  """Raises the first error of OptiX work that ran inside a replayed CUDA graph, if any.
+
+  A graph captured with `rc.optix_graph_capture` runs the OptiX calls on a worker thread; their
+  errors cannot propagate through `wp.capture_launch`. The next `render(rc)` raises them too, but
+  a loop that only replays graphs should call this after synchronising (`wp.synchronize()`).
+
+  Raises:
+    RuntimeError: chained to the worker's error.
+  """
+  from mujoco_warp_pbr._src.optix import graph
+
+  if rc._optix is not None:
+    rc._optix.check()
+  else:
+    graph.raise_released_error()
