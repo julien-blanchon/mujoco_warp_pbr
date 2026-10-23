@@ -21,6 +21,8 @@ Renderers:
   newton_pbr   mujoco_warp_pbr through newton_pbr.SensorPbrCamera (scene imported into Newton)
   newton       Newton's SensorCamera (scene imported into Newton)
   newton_rtx   Newton's ViewerRTX: NVIDIA Omniverse RTX (RTX GPUs, newton[rtx]; one image at a time)
+  newton_rtx_tiled  Omniverse RTX through ViewerRTX's stage, one camera per world, all worlds in one
+               tiled render product per step (IsaacLab's OVRTX layout)
   mjwarp       MuJoCo Warp's renderer (shadows on)
   mujoco       MuJoCo's OpenGL renderer (one image at a time)
   mitsuba      Mitsuba 3 path tracer, 16 spp (one image at a time; reference quality at higher spp)
@@ -73,6 +75,7 @@ RENDERERS = {
   "mjwarp": ["--renderer", "mjwarp", "--set", "use_shadows=true"],
   "mujoco": ["--renderer", "mujoco", *_SEQUENTIAL],
   "newton_rtx": ["--renderer", "newton_rtx", *_SEQUENTIAL],
+  "newton_rtx_tiled": ["--renderer", "newton_rtx_tiled"],
   "mitsuba": ["--renderer", "mitsuba", "--mitsuba-spp", "16", *_SEQUENTIAL],
 }
 # Renderers lit by the scene's HDR environment (the others only see the scene's own lights).
@@ -133,6 +136,8 @@ def configurations(scene_names: list[str], contexts: dict, renderers: dict) -> l
           if renderer in ("newton", "newton_pbr") and context != "batch_64":
             continue
           if renderer == "newton_rtx" and context != "single":
+            continue
+          if renderer == "newton_rtx_tiled" and context != "batch_64":
             continue
         lit = envmap if renderer in _ENV_RENDERERS and scene not in scenes.LIGHTS_ONLY else []
         key = {"scene": scene, "context": context, "renderer": renderer, "nworld": nworld, "res": res}

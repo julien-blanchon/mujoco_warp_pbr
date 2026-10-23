@@ -30,6 +30,7 @@ RENDERER_NAMES = {
   "newton_pbr": "PBR via Newton",
   "newton": "Newton",
   "newton_rtx": "Newton RTX",
+  "newton_rtx_tiled": "Newton RTX (tiled)",
   "mjwarp": "MuJoCo Warp",
   "mujoco": "MuJoCo GL",
   "mitsuba": "Mitsuba (16 spp)",

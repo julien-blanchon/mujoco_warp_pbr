@@ -26,7 +26,8 @@ Usage:
 
 MuJoCo's OpenGL renderer, Newton's ViewerRTX and Mitsuba render one image at a time. Their
 throughput does not depend on the batch size, so they time a loop over min(nworld,
---sequential-frames) images.
+--sequential-frames) images. newton_rtx_tiled renders every world's camera with Omniverse RTX
+in one step (references/ovrtx_tiled.py; --set mode="minimal" for RTX's Minimal mode).
 """
 
 import argparse
@@ -133,6 +134,19 @@ def build(args, mjm: mujoco.MjModel, spec: mujoco.MjSpec):
         rig.render()
 
     return None, None, rig, None, render_rtx
+  if args.renderer == "newton_rtx_tiled":
+    # Omniverse RTX, every world's camera in one tiled render product (IsaacLab's layout).
+    from references import ovrtx_tiled
+
+    extra = {k: _parse_value(v) for k, v in (kv.split("=", 1) for kv in args.set)}
+    rig = ovrtx_tiled.OvrtxTiledCamera(spec, mjm, args.nworld, args.res, **extra)
+
+    def render_tiled():
+      if args.refit:
+        rig.update()  # world-0 transforms written to the RTX stage
+      rig.render()
+
+    return None, None, rig, None, render_tiled
   if args.renderer == "newton":
     from references import newton_camera
 
@@ -257,7 +271,9 @@ def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--scene", default="material_grid", choices=sorted(scenes.SCENES))
   parser.add_argument(
-    "--renderer", default="pbr", choices=["pbr", "mjwarp", "newton", "newton_pbr", "newton_rtx", "mujoco", "mitsuba"]
+    "--renderer",
+    default="pbr",
+    choices=["pbr", "mjwarp", "newton", "newton_pbr", "newton_rtx", "newton_rtx_tiled", "mujoco", "mitsuba"],
   )
   parser.add_argument("--nworld", type=int, default=1024)
   parser.add_argument("--res", type=int, default=64)
@@ -313,8 +329,8 @@ def main():
     wp.synchronize()
     once = time.perf_counter() - start
     args.iters = int(max(1, min(args.iters, round(args.time_budget / max(once, 1e-6)))))
-  # OptiX launches cannot be captured in CUDA graphs: time them eagerly (launches stay async).
-  eager = args.renderer == "pbr" and rc.traversal == "optix"
+  # OptiX launches and RTX steps cannot be captured in CUDA graphs: time them eagerly.
+  eager = (args.renderer == "pbr" and rc.traversal == "optix") or args.renderer == "newton_rtx_tiled"
   if sequential:
     times = time_loop(step, args.iters, args.repeats)
   elif eager:
@@ -357,7 +373,11 @@ def main():
   if args.out:
     with args.out.open("a") as f:
       f.write(json.dumps(row) + "\n")
-  if args.save_image and args.renderer != "newton":
+  if args.save_image and args.renderer in ("newton_rtx", "newton_rtx_tiled"):
+    from PIL import Image
+
+    Image.fromarray((rc.image() * 255).astype(np.uint8)).save(args.save_image)
+  elif args.save_image and args.renderer != "newton":
     from PIL import Image
 
     out = wp.zeros((args.nworld, args.res, args.res), dtype=wp.vec3)
