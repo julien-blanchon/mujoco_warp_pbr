@@ -29,10 +29,12 @@ Usage:
     [--bsdf filament|principled] [--out results/validation]
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import _common
 import flip_evaluator
@@ -47,10 +49,16 @@ from scenes import tone_map
 
 import mujoco_warp_pbr as mjpbr
 
+if TYPE_CHECKING:
+  from _common import RGB
+  from shape_extensions import Int
+  from shape_extensions import IntVar
 
-def render_ours(
-  mjm, env, res: int, spp_axis: int, tier: int = mjpbr.Tier.REALTIME, path_samples: int = 256, max_depth: int = 4
-):
+
+def render_ours[R: IntVar](
+  mjm, env, res: Int[R], spp_axis: int, tier: int = mjpbr.Tier.REALTIME, path_samples: int = 256, max_depth: int = 4
+) -> tuple[mujoco.MjData, mjpbr.PbrRenderContext, int, RGB[R, R]]:
+  """Our linear HDR image (res, res, 3), with the data, render context and camera it came from."""
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
@@ -133,6 +141,7 @@ def main():
     }
     rows.append(row)
     print(json.dumps(row))
+    # ours | Mitsuba | ꟻLIP error map, (res, 3 * res, 3).
     sheet = np.concatenate(
       [a, b, np.repeat(np.asarray(flip_map)[..., None], 3, -1) if np.asarray(flip_map).ndim == 2 else flip_map], axis=1
     )

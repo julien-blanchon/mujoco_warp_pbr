@@ -40,6 +40,8 @@ start timing together, after each has compiled and warmed up, and the aggregate 
 the scaling efficiency against one GPU are reported (and appended to --out).
 """
 
+from __future__ import annotations
+
 import argparse
 import dataclasses
 import json
@@ -50,7 +52,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import _common
 import mujoco
@@ -60,6 +62,11 @@ import scenes
 import warp as wp
 
 import mujoco_warp_pbr as mjpbr
+
+if TYPE_CHECKING:
+  from _common import RGB
+  from shape_extensions import Int
+  from shape_extensions import IntVar
 
 # Renderers whose model, data and render context are MuJoCo Warp's (--randomize, --jitter-camera).
 WARP_RENDERERS = ("pbr", "mjwarp")
@@ -84,7 +91,7 @@ class Setup:
   step: Callable[[], Any]
   frames: int
   kind: str
-  image: Callable[[], np.ndarray] | None = None
+  image: Callable[[], RGB[int, int]] | None = None
   model: Any = None
   data: Any = None
   context: Any = None
@@ -124,15 +131,15 @@ def _camera(mjm: mujoco.MjModel) -> int:
   return mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
 
 
-def _unpack_rgba(color) -> np.ndarray:
+def _unpack_rgba(color) -> RGB[int, int]:
   """World 0 of a Newton packed RGBA image as float RGB in [0, 1]."""
   c = color.numpy()[0]
   return np.stack([(c >> s) & 0xFF for s in (0, 8, 16)], axis=-1).astype(np.float32) / 255.0
 
 
-def _rgb_image(get_rgb: Callable[..., Any], rc, res: int, nworld: int) -> Callable[[], np.ndarray]:
-  def image() -> np.ndarray:
-    out = wp.zeros((nworld, res, res), dtype=wp.vec3)
+def _rgb_image[R: IntVar](get_rgb: Callable[..., Any], rc, res: Int[R], nworld: int) -> Callable[[], RGB[R, R]]:
+  def image() -> RGB[R, R]:
+    out = wp.zeros((nworld, res, res), dtype=wp.vec3)  # array[vec3, [nworld, R, R]]
     get_rgb(rc, 0, out)
     return out.numpy()[0]
 
@@ -194,7 +201,7 @@ def build_mujoco(args, spec: mujoco.MjSpec, mjm: mujoco.MjModel, options: dict[s
       renderer.update_scene(mjd, camera=cam)
       renderer.render()
 
-  def image() -> np.ndarray:
+  def image() -> RGB[int, int]:
     renderer.update_scene(mjd, camera=cam)
     return renderer.render().astype(np.float32) / 255.0
 
@@ -226,7 +233,7 @@ def build_mitsuba(args, spec: mujoco.MjSpec, mjm: mujoco.MjModel, options: dict[
       dr.eval(mi.render(scene))
     dr.sync_thread()
 
-  def image() -> np.ndarray:
+  def image() -> RGB[int, int]:
     return scenes.tone_map(np.array(mi.render(scene)), float(rc.exposure.numpy()[0]))
 
   return Setup(step, sequential_frames(args), "sequential", image)
@@ -314,7 +321,7 @@ def jitter_cameras(d, nworld: int, seed: int = 1, offset: float = 0.03, angle_de
   for w in range(nworld):
     for c in range(mat.shape[1]):
       axis = rng.normal(size=3)
-      axis /= np.linalg.norm(axis)
+      axis /= np.linalg.norm(axis)  # pyrefly: ignore[unsupported-operation] - numpy stubs: ndarray / floating
       a = np.radians(angle_deg) * rng.normal()
       k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
       rot = np.eye(3) + np.sin(a) * k + (1 - np.cos(a)) * k @ k
@@ -507,7 +514,7 @@ def main(argv: list[str] | None = None):
     once = time.perf_counter() - start
     args.iters = int(max(1, min(args.iters, round(args.time_budget / max(once, 1e-6)))))
   times = time_setup(setup, args.iters, args.repeats)
-  median = float(np.median(times))
+  median = float(np.median(times))  # pyrefly: ignore[bad-argument-type] - numpy stubs: float(float64)
   sequential = setup.kind == "sequential"
   row = {
     "scene": args.scene,

@@ -9,7 +9,7 @@ description = "Batched physically based renderer for MuJoCo Warp"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
 authors = [{name = "Julien Blanchon"}]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "mujoco>=3.13.0",
     # The renderer builds on mujoco_warp._src internals: pinned to a revision in [tool.uv.sources].
@@ -19,9 +19,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Type-checking-only stubs (shape-aware Warp and NumPy, MuJoCo): `pip install mujoco-warp-pbr[typing]`.
+typing = [
+    "mujoco-stubs>=3.13",
+    "pyrefly-numpy-stubs>=1.4",
+    "pyrefly-warp-stubs>=0.1",
+]
 dev = [
+    "mujoco-warp-pbr[typing]",
     "pillow",
     "pre-commit",
+    "pyrefly>=1.4",
     "pytest",
     "pytest-xdist",
     "ruff",
@@ -101,33 +109,33 @@ markers = ["slow: heavy path-traced references (deselect with -m 'not slow')"]
 [tool.setuptools.packages.find]
 include = ["mujoco_warp_pbr*"]
 
-# Type checking (ty, pyrefly). Benchmarks and tools import their sibling modules as scripts.
-# Warp kernels (@wp.kernel / @wp.func / @wp.struct) are a DSL that type checkers misread: array
-# indexing, vector arithmetic and struct annotations, so those rules are off. MuJoCo ships no stubs
-# for its extension modules.
-[tool.ty.environment]
-extra-paths = ["benchmarks", "tools", "tools/hf", "newton-pbr"]
-
-[tool.ty.analysis]
-replace-imports-with-any = ["mujoco", "mujoco.**"]
-allowed-unresolved-imports = ["pxr.**", "newton.**", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "flip_evaluator"]
-
-[tool.ty.src]
-exclude = ["research/optix_poc", "context"]
-
-[tool.ty.rules]
-invalid-type-form = "ignore"
-not-subscriptable = "ignore"
-not-iterable = "ignore"
-unsupported-operator = "ignore"
-
+# Type checking: Pyrefly with the `typing` extra (shape-aware Warp / NumPy stubs, MuJoCo stubs).
+# Benchmarks and tools import their sibling modules as scripts. The `default` preset is needed: `basic`
+# (Pyrefly without a config) hides shape errors.
 [tool.pyrefly]
+preset = "default"
 search-path = [".", "benchmarks", "tools", "tools/hf", "newton-pbr"]
 project-excludes = ["research/optix_poc", "context", "**/.venv"]
-replace-imports-with-any = ["mujoco", "mujoco.*"]
-ignore-missing-imports = ["pxr.*", "newton.*", "optix", "ovrtx", "huggingface_hub", "mitsuba", "pygltflib", "flip_evaluator"]
+# Optional packages without types: USD (compiled), OptiX / ovrtx bindings (not on PyPI), and
+# huggingface_hub (declared only in the inline metadata of the tools/hf scripts).
+ignore-missing-imports = ["pxr.*", "optix", "ovrtx", "huggingface_hub"]
 
-[tool.pyrefly.errors]
+# Warp kernels in the library are not shape-typed yet, and Warp's DSL (array indexing, vector
+# arithmetic, struct fields) reads as errors without ranked annotations: off until the library port.
+[[tool.pyrefly.sub-config]]
+matches = "mujoco_warp_pbr/**"
+
+[tool.pyrefly.sub-config.errors]
+bad-index = "ignore"
+unsupported-operation = "ignore"
+not-iterable = "ignore"
+bad-unpacking = "ignore"
+
+# Same as above, until the library port.
+[[tool.pyrefly.sub-config]]
+matches = "newton-pbr/**"
+
+[tool.pyrefly.sub-config.errors]
 bad-index = "ignore"
 unsupported-operation = "ignore"
 not-iterable = "ignore"

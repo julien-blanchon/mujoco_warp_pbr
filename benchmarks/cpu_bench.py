@@ -45,6 +45,8 @@ on a machine that also has an NVIDIA driver; MUJOCO_GL=osmesa works where libOSM
 Mitsuba's LLVM backend needs libLLVM (DRJIT_LIBLLVM_PATH if it is not found).
 """
 
+from __future__ import annotations
+
 import argparse
 import dataclasses
 import json
@@ -57,9 +59,12 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import _common
+
+if TYPE_CHECKING:
+  from _common import RGB
 
 # suite.py's renderer options (minus --renderer) and its HDR environment.
 RENDERERS = {
@@ -150,7 +155,7 @@ class Setup:
 
   step: Callable[[], Any]
   frames: int
-  image: Callable[[], Any] | None = None
+  image: Callable[[], RGB[int, int]] | None = None
   model: Any = None  # mjw.Model of the Warp renderers, shared by the thread workers
   gl_renderer: str | None = None  # OpenGL renderer string of the mujoco renderer
 
@@ -232,7 +237,7 @@ def build_warp(renderer: str, mjm, nworld: int, res: int, opts: dict[str, Any], 
     def step():
       mjw.render(m, d, rc)
 
-  def image():
+  def image() -> RGB[int, int]:
     out = wp.zeros((nworld, res, res), dtype=wp.vec3)
     mjw.get_rgb(base, 0, out)
     return out.numpy()[0]
@@ -252,7 +257,7 @@ def build_mujoco(mjm, res: int) -> Setup:
     renderer.update_scene(mjd, camera=cam)
     renderer.render()
 
-  def image():
+  def image() -> RGB[int, int]:
     renderer.update_scene(mjd, camera=cam)
     return renderer.render() / 255.0
 
@@ -328,13 +333,23 @@ def timed(setup: Setup, seconds: float, start_event=None) -> dict:
   }
 
 
+def _init_warp_quietly():
+  """wp.init() without the device banner (Warp 1.18 replaced config.quiet by config.log_level)."""
+  import warp as wp
+
+  if hasattr(wp.config, "log_level"):
+    wp.config.log_level = wp.LOG_WARNING
+  else:
+    wp.config.quiet = True  # pyrefly: ignore[missing-attribute] - Warp < 1.18
+  wp.init()
+
+
 def worker_main(spec: dict):
   """One process worker (--mode process): pin, build, compile, barrier, time; print a JSON line."""
   _pin(0, spec["cores"])
   import warp as wp
 
-  wp.config.quiet = True
-  wp.init()
+  _init_warp_quietly()
   renderer = spec["renderer"]
   _, mjm = scene_model(spec["scene"])
   opts = spec["options"]
@@ -580,10 +595,8 @@ def main(argv: list[str] | None = None):
 
   if args.scene not in scenes.SCENES:
     raise SystemExit(f"unknown scene {args.scene}; one of {sorted(scenes.SCENES)}")
-  import warp as wp
 
-  wp.config.quiet = True
-  wp.init()
+  _init_warp_quietly()
   group, _ = scenes.SCENES[args.scene]
   base = {
     "kind": "throughput",

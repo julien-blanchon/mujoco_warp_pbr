@@ -23,11 +23,13 @@ denoise_iterations=3) or an attribute of the render context (e.g. denoise_sigma_
 unknown keys are an error. Values are parsed as in bench.py (JSON, else a string).
 """
 
+from __future__ import annotations
+
 import argparse
 import inspect
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import _common
 import flip_evaluator
@@ -40,10 +42,18 @@ from scenes import VALIDATION
 
 import mujoco_warp_pbr as mjpbr
 
+if TYPE_CHECKING:
+  from _common import RGB
+  from shape_extensions import Int
+  from shape_extensions import IntVar
+
 _CONTEXT_KWARGS = set(inspect.signature(mjpbr.create_render_context).parameters)
 
 
-def _render(mjm, env, res: int, samples: int, denoise: bool, overrides: dict[str, Any], seed: int = 0) -> np.ndarray:
+def _render[R: IntVar](
+  mjm, env, res: Int[R], samples: int, denoise: bool, overrides: dict[str, Any], seed: int = 0
+) -> RGB[R, R]:
+  """Display RGB (res, res, 3) of the path-traced tier."""
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
@@ -104,7 +114,7 @@ def main():
       print(json.dumps(row))
       if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
-        sheet = np.concatenate([*images, ref], axis=1)
+        sheet = np.concatenate([*images, ref], axis=1)  # raw | denoised | reference, (res, 3 * res, 3)
         Image.fromarray((np.clip(sheet, 0, 1) * 255).astype(np.uint8)).save(args.out / f"{name}_{n}spp.png")
 
 

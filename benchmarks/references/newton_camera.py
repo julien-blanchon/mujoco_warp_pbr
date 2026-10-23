@@ -19,7 +19,10 @@ Uses the settings of Newton's own camera benchmark (SAH BVH, 8x8 tiled order, bl
 shadows and textures on). Shading is Newton's (Lambert + hemispheric ambient), not PBR.
 """
 
+from __future__ import annotations
+
 import os
+from typing import Any
 
 import mujoco
 import newton
@@ -28,7 +31,7 @@ import warp as wp
 from newton.sensors import SensorCamera
 
 
-def newton_scene(spec: mujoco.MjSpec, mjm: mujoco.MjModel, nworld: int):
+def newton_scene(spec: mujoco.MjSpec, mjm: mujoco.MjModel, nworld: int) -> tuple[Any, Any, wp.array1d[wp.transformf], float]:
   """The MJCF scene imported into Newton and replicated, with its posed state and the MuJoCo
   camera "cam" as one Newton camera transform per world."""
   base_dir = spec.modelfiledir or os.getcwd()
@@ -57,6 +60,8 @@ def newton_scene(spec: mujoco.MjSpec, mjm: mujoco.MjModel, nworld: int):
 
 
 class NewtonCamera:
+  cameras: wp.array1d[wp.transformf]  # one camera transform per world
+
   def __init__(self, spec: mujoco.MjSpec, mjm: mujoco.MjModel, nworld: int, res: int, depth: bool = False):
     self.model, self.state, self.cameras, fovy = newton_scene(spec, mjm, nworld)
 
@@ -82,6 +87,8 @@ class NewtonCamera:
 
 class NewtonPbrCamera:
   """mujoco_warp_pbr through newton_pbr.SensorPbrCamera on the Newton model ("Newton setup")."""
+
+  cameras: wp.array1d[wp.transformf]  # one camera transform per world
 
   def __init__(self, spec: mujoco.MjSpec, mjm: mujoco.MjModel, nworld: int, res: int, depth: bool = False, **options):
     import newton_pbr

@@ -37,13 +37,21 @@ Usage:
   python tools/gltf_to_mjcf.py MODEL.glb OUT_DIR [--name NAME] [--scale S] [--normalize SIZE]
 """
 
+from __future__ import annotations
+
 import argparse
 import io
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pygltflib
 from PIL import Image
+
+if TYPE_CHECKING:
+  from shape_extensions import IntVar
+
+type Matrix4 = np.ndarray[[4, 4], np.dtype[np.float64]]
 
 _COMPONENT_DTYPE = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
 _TYPE_SIZE = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
@@ -85,16 +93,17 @@ class _Gltf:
     ncomp = _TYPE_SIZE[acc.type]
     view = self.doc.bufferViews[acc.bufferView]
     data = self._view_bytes(acc.bufferView)
-    stride = view.byteStride or dtype.itemsize * ncomp
+    # numpy stubs: np.dtype has no itemsize; glTF only normalises integer components (np.iinfo).
+    stride = view.byteStride or dtype.itemsize * ncomp  # pyrefly: ignore[missing-attribute]
     offset = acc.byteOffset or 0
     rows = np.lib.stride_tricks.as_strided(
       np.frombuffer(data, dtype=np.uint8, offset=offset),
-      shape=(acc.count, dtype.itemsize * ncomp),
+      shape=(acc.count, dtype.itemsize * ncomp),  # pyrefly: ignore[missing-attribute]
       strides=(stride, 1),
     )
     out = np.ascontiguousarray(rows).view(dtype).reshape(acc.count, ncomp)
     if acc.normalized:
-      out = out.astype(np.float32) / np.iinfo(dtype).max
+      out = out.astype(np.float32) / np.iinfo(dtype).max  # pyrefly: ignore[no-matching-overload]
     return out if ncomp > 1 else out[:, 0]
 
   def image(self, texture_index: int | None) -> Image.Image:
@@ -107,7 +116,7 @@ class _Gltf:
       return Image.open(io.BytesIO(self.doc.decode_data_uri(image.uri)))
     return Image.open(self.path.parent / image.uri)
 
-  def node_matrix(self, node: pygltflib.Node) -> np.ndarray:
+  def node_matrix(self, node: pygltflib.Node) -> Matrix4:
     if node.matrix is not None:
       return np.array(node.matrix, dtype=np.float64).reshape(4, 4).T  # glTF is column-major.
     t = np.eye(4)
@@ -119,11 +128,17 @@ class _Gltf:
       [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
       [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
     ]
-    s = np.diag([*(node.scale or [1.0, 1.0, 1.0]), 1.0])
+    s = np.diag([*(node.scale or [1.0, 1.0, 1.0]), 1.0])  # pyrefly: ignore[no-matching-overload] - numpy stubs: diag(list)
     return t @ r @ s
 
 
-def _write_obj(path: Path, pos: np.ndarray, normal: np.ndarray | None, uv: np.ndarray | None, faces: np.ndarray):
+def _write_obj[N: IntVar](
+  path: Path,
+  pos: np.ndarray[[N, 3], np.dtype[Any]],
+  normal: np.ndarray[[N, 3], np.dtype[Any]] | None,
+  uv: np.ndarray[[N, 2], np.dtype[Any]] | None,
+  faces: np.ndarray[[int, 3], np.dtype[np.int64]],
+):
   lines = [f"v {p[0]:.7g} {p[1]:.7g} {p[2]:.7g}" for p in pos]
   if uv is not None:
     # MuJoCo flips v when loading OBJ, so write OBJ's bottom-left convention.
@@ -237,7 +252,7 @@ class _Converter:
     self.materials[index] = f"    <material {attrs}>{body}\n    </material>" if body else f"    <material {attrs}/>"
     return f"mat{index}"
 
-  def primitive(self, mesh_index: int, prim_index: int, prim: pygltflib.Primitive, world: np.ndarray):
+  def primitive(self, mesh_index: int, prim_index: int, prim: pygltflib.Primitive, world: Matrix4):
     if (prim.mode if prim.mode is not None else _TRIANGLES) != _TRIANGLES:
       print(f"  skipping mesh {mesh_index} primitive {prim_index}: mode {prim.mode} is not TRIANGLES")
       return
@@ -265,7 +280,7 @@ class _Converter:
     mat_attr = f' material="{mat}"' if mat else ""
     self.geoms.append(f'    <geom type="mesh" mesh="{name}"{mat_attr} contype="0" conaffinity="0" group="1" mass="0"/>')
 
-  def node(self, node_index: int, parent: np.ndarray):
+  def node(self, node_index: int, parent: Matrix4):
     node = self.gltf.doc.nodes[node_index]
     world = parent @ self.gltf.node_matrix(node)
     if node.mesh is not None:

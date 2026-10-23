@@ -15,6 +15,8 @@
 
 """Shared fixtures: build device model/data and render a scene from inline XML."""
 
+from __future__ import annotations
+
 import dataclasses
 
 import mujoco
@@ -25,6 +27,9 @@ import warp as wp
 
 import mujoco_warp_pbr as mjpbr
 
+# One camera's images of every world, (nworld, height, width, 3).
+type Images = np.ndarray[[int, int, int, 3], np.dtype[np.float32]]
+
 
 @dataclasses.dataclass
 class Scene:
@@ -34,18 +39,18 @@ class Scene:
   d: mjw.Data
   rc: mjpbr.PbrRenderContext
 
-  def render(self) -> "Scene":
+  def render(self) -> Scene:
     mjw.refit_bvh(self.m, self.d, self.rc.base)
     mjpbr.render(self.m, self.d, self.rc)
     return self
 
-  def rgb(self, camera: int = 0) -> np.ndarray:
+  def rgb(self, camera: int = 0) -> Images:
     w, h = self.rc.base.cam_res.numpy()[camera]
     out = wp.zeros((self.d.nworld, h, w), dtype=wp.vec3)
     mjpbr.get_rgb(self.rc, camera, out)
     return out.numpy()
 
-  def hdr(self, camera: int = 0) -> np.ndarray:
+  def hdr(self, camera: int = 0) -> Images:
     w, h = self.rc.base.cam_res.numpy()[camera]
     out = wp.zeros((self.d.nworld, h, w), dtype=wp.vec3)
     mjpbr.get_hdr(self.rc, camera, out)

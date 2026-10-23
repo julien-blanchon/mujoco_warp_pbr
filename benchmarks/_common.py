@@ -32,7 +32,15 @@ from collections.abc import Generator
 from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+  import numpy as np
+  from shape_extensions import IntVar
+
+# A float RGB image, (height, width, 3): display values in [0, 1] or linear radiance. Type-checking
+# only (the alias is evaluated lazily), with the dtype left open (float32 or float64).
+type RGB[H: IntVar, W: IntVar] = np.ndarray[[H, W, 3], np.dtype[Any]]
 
 ROOT = Path(__file__).resolve().parents[1]
 
