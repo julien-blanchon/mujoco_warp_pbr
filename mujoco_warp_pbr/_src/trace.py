@@ -79,14 +79,14 @@ class Geometry:
   """Model, data and BVH arrays read by ray queries and surface evaluation."""
 
   # Model:
-  geom_type: wp.array[int]
+  geom_type: wp.array1d[int]
   geom_dataid: wp.array2d[int]
   geom_matid: wp.array2d[int]
   geom_size: wp.array2d[wp.vec3]
   geom_rgba: wp.array2d[wp.vec4]
-  flex_vertadr: wp.array[int]
-  flex_edge: wp.array[wp.vec2i]
-  flex_radius: wp.array[float]
+  flex_vertadr: wp.array1d[int]
+  flex_edge: wp.array1d[wp.vec2i]
+  flex_radius: wp.array1d[float]
   mat_rgba: wp.array2d[wp.vec4]
   # Data:
   geom_xpos: wp.array2d[wp.vec3]
@@ -96,20 +96,20 @@ class Geometry:
   geom_xmat_trace: wp.array2d[wp.mat33]
   # Acceleration structures:
   bvh_id: wp.uint64
-  group_root: wp.array[int]
+  group_root: wp.array1d[int]
   bvh_ngeom: int
   bvh_nflexgeom: int
-  enabled_geom_ids: wp.array[int]
-  mesh_bvh_id: wp.array[wp.uint64]
-  hfield_bvh_id: wp.array[wp.uint64]
-  flex_rgba: wp.array[wp.vec4]
-  flex_geom_flexid: wp.array[int]
-  flex_geom_edgeid: wp.array[int]
-  flex_bvh_id: wp.array[wp.uint64]
+  enabled_geom_ids: wp.array1d[int]
+  mesh_bvh_id: wp.array1d[wp.uint64]
+  hfield_bvh_id: wp.array1d[wp.uint64]
+  flex_rgba: wp.array1d[wp.vec4]
+  flex_geom_flexid: wp.array1d[int]
+  flex_geom_edgeid: wp.array1d[int]
+  flex_bvh_id: wp.array1d[wp.uint64]
   flex_group_root: wp.array2d[int]
   # Hardware ray tracing (traversal="optix", see optix/): unused by the software traversal.
   rt_handle: wp.uint64  # OptiX instance acceleration structure over all worlds
-  rt_frame: wp.array[wp.vec3]  # world cell: lower, upper, spacing, centre
+  rt_frame: wp.array1d[wp.vec3]  # world cell: lower, upper, spacing, centre
   rt_grid: wp.vec3i  # world cells per axis
 
 
@@ -146,12 +146,12 @@ def geometry(m: Model, d: Data, base: RenderContext) -> Geometry:
 @wp.kernel
 def _mesh_trace_frames(
   # Model:
-  geom_type: wp.array[int],
+  geom_type: wp.array1d[int],
   geom_dataid: wp.array2d[int],
   # Data in:
   geom_xmat_in: wp.array2d[wp.mat33],
   # In:
-  mesh_bvh_frame: wp.array[wp.mat33],
+  mesh_bvh_frame: wp.array1d[wp.mat33],
   # Out:
   geom_xmat_trace_out: wp.array2d[wp.mat33],
 ):
@@ -188,14 +188,14 @@ def update_trace_frames(m: Model, d: Data, rc: PbrRenderContext) -> None:
     )
 
 
-def _make_query(cast: Callable) -> Callable:
+def _make_query(cast_ray: Callable) -> Callable:
   """Wraps a MuJoCo Warp cast function: query(geo, worldid, origin, direction, max_dist, cull)."""
 
   @wp.func
   def query(
     geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float, cull_backfaces: bool
   ) -> tuple[int, float, wp.vec3, float, float, int, int]:
-    return cast(
+    return cast_ray(
       geo.geom_type,
       geo.geom_dataid,
       geo.geom_matid,
@@ -241,8 +241,9 @@ def make_trace(geom_ray_types: tuple[int, ...], cull_backfaces: bool, ordered: b
   max_dist.
   """
   make_cast = traverse.make_ordered_cast if ordered else _make_cast_ray
-  cast_closest = _make_query(make_cast(geom_ray_types, first_hit=False))
-  cast_any = _make_query(make_cast(geom_ray_types, first_hit=True))
+  # mujoco_warp annotates geom_ray_types as `tuple[int]` (a 1-tuple); it takes any length.
+  cast_closest = _make_query(make_cast(geom_ray_types, first_hit=False))  # pyrefly: ignore[bad-argument-type]
+  cast_any = _make_query(make_cast(geom_ray_types, first_hit=True))  # pyrefly: ignore[bad-argument-type]
 
   @wp.func
   def trace_closest(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> Hit:

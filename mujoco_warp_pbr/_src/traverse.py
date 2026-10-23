@@ -97,6 +97,8 @@ if AVAILABLE:
     native_name="mjpbr::BvhNode",
     fields={"lower": wp.vec3, "left": wp.int32, "upper": wp.vec3, "right": wp.int32, "leaf": wp.int32},
   )
+  # Registered at import, so the type checker cannot see them: their call sites carry
+  # `# pyrefly: ignore[missing-attribute]`.
   wp.build_experimental.add_builtin(
     "mjpbr_bvh_node", {"bvh_id": wp.uint64, "index": int}, _BvhNode, native_name="mjpbr::bvh_node"
   )
@@ -128,13 +130,13 @@ def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Calla
 
   @wp.func
   def intersect(
-    geom_type: wp.array[int],
+    geom_type: wp.array1d[int],
     geom_dataid: wp.array2d[int],
     geom_size: wp.array2d[wp.vec3],
     geom_xpos_in: wp.array2d[wp.vec3],
     geom_xmat_in: wp.array2d[wp.mat33],
-    mesh_bvh_id: wp.array[wp.uint64],
-    hfield_bvh_id: wp.array[wp.uint64],
+    mesh_bvh_id: wp.array1d[wp.uint64],
+    hfield_bvh_id: wp.array1d[wp.uint64],
     worldid: int,
     gi: int,
     origin: wp.vec3,
@@ -192,14 +194,14 @@ def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Calla
   @wp.func
   def cast_ray(
     # Model:
-    geom_type: wp.array[int],
+    geom_type: wp.array1d[int],
     geom_dataid: wp.array2d[int],
     geom_matid: wp.array2d[int],
     geom_size: wp.array2d[wp.vec3],
     geom_rgba: wp.array2d[wp.vec4],
-    flex_vertadr: wp.array[int],
-    flex_edge: wp.array[wp.vec2i],
-    flex_radius: wp.array[float],
+    flex_vertadr: wp.array1d[int],
+    flex_edge: wp.array1d[wp.vec2i],
+    flex_radius: wp.array1d[float],
     mat_rgba: wp.array2d[wp.vec4],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -211,13 +213,13 @@ def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Calla
     worldid: int,
     bvh_ngeom: int,
     flex_bvh_ngeom: int,
-    enabled_geom_ids: wp.array[int],
-    mesh_bvh_id: wp.array[wp.uint64],
-    hfield_bvh_id: wp.array[wp.uint64],
-    flex_rgba: wp.array[wp.vec4],
-    flex_geom_flexid: wp.array[int],
-    flex_geom_edgeid: wp.array[int],
-    flex_bvh_id: wp.array[wp.uint64],
+    enabled_geom_ids: wp.array1d[int],
+    mesh_bvh_id: wp.array1d[wp.uint64],
+    hfield_bvh_id: wp.array1d[wp.uint64],
+    flex_rgba: wp.array1d[wp.vec4],
+    flex_geom_flexid: wp.array1d[int],
+    flex_geom_edgeid: wp.array1d[int],
+    flex_bvh_id: wp.array1d[wp.uint64],
     flex_group_root: wp.array2d[int],
     ray_origin_world: wp.vec3,
     ray_dir_world: wp.vec3,
@@ -236,7 +238,7 @@ def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Calla
 
     stack_node = _IntStack()
     stack_t = _FloatStack()
-    root = wp.mjpbr_bvh_node(bvh_id, group_root)
+    root = wp.mjpbr_bvh_node(bvh_id, group_root)  # pyrefly: ignore[missing-attribute]
     count = int(0)
     if _ray_aabb(ray_origin_world, rcp_dir, root.lower, root.upper, dist * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS) >= 0.0:
       stack_node[0] = group_root
@@ -249,10 +251,10 @@ def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Calla
       cut = dist * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS
       if stack_t[count] >= cut:
         continue
-      node = wp.mjpbr_bvh_node(bvh_id, stack_node[count])
+      node = wp.mjpbr_bvh_node(bvh_id, stack_node[count])  # pyrefly: ignore[missing-attribute]
       if node.leaf == 0:
-        a = wp.mjpbr_bvh_node(bvh_id, node.left)
-        b = wp.mjpbr_bvh_node(bvh_id, node.right)
+        a = wp.mjpbr_bvh_node(bvh_id, node.left)  # pyrefly: ignore[missing-attribute]
+        b = wp.mjpbr_bvh_node(bvh_id, node.right)  # pyrefly: ignore[missing-attribute]
         ta = _ray_aabb(ray_origin_world, rcp_dir, a.lower, a.upper, cut)
         tb = _ray_aabb(ray_origin_world, rcp_dir, b.lower, b.upper, cut)
         near = node.left
@@ -277,7 +279,7 @@ def make_ordered_cast(geom_ray_types: tuple[int, ...], first_hit: bool) -> Calla
 
       for slot in range(node.left, node.right):
         cut = dist * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS
-        local_id = wp.mjpbr_bvh_primitive(bvh_id, slot) - worldid * ngeom
+        local_id = wp.mjpbr_bvh_primitive(bvh_id, slot) - worldid * ngeom  # pyrefly: ignore[missing-attribute]
         if local_id >= bvh_ngeom:
           continue
         gi = enabled_geom_ids[local_id]

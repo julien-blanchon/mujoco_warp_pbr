@@ -235,26 +235,26 @@ class PbrRenderContext:
   light_range: wp.array2d[float]
   light_bulbradius: wp.array2d[float]
   headlight_intensity: float
-  exposure: wp.array[float]
-  ambient_radiance: wp.array[wp.vec3]
+  exposure: wp.array1d[float]
+  ambient_radiance: wp.array1d[wp.vec3]
   dfg_lut: wp.Texture2D
   background_linear: wp.vec3
   has_env: bool
   env_background: bool
   env_maps: list
-  env_radiance: wp.array[wp.Texture2D]
-  env_prefiltered: wp.array[wp.Texture3D]
+  env_radiance: wp.array1d[wp.Texture2D]
+  env_prefiltered: wp.array1d[wp.Texture3D]
   env_sh: wp.array2d[wp.vec3]
   env_texel_angle: float
-  env_id: wp.array[int]
-  env_intensity: wp.array[float]
-  env_yaw: wp.array[float]
+  env_id: wp.array1d[int]
+  env_intensity: wp.array1d[float]
+  env_yaw: wp.array1d[float]
   env_prob: wp.array3d[float]
   env_marginal: wp.array2d[float]
   env_conditional: wp.array3d[float]
-  textures: wp.array[wp.Texture2D]
+  textures: wp.array1d[wp.Texture2D]
   textures_registry: list
-  tex_size: wp.array[wp.vec2]
+  tex_size: wp.array1d[wp.vec2]
   features: "SurfaceFeatures"
   samples_per_pixel: int
   shadow_samples: int
@@ -287,8 +287,8 @@ class PbrRenderContext:
   optix_rebuild_every: int = 0
   optix_max_registers: int | None = None
   optix_graph_capture: bool = False
-  mesh_bvh_frame: wp.array[wp.mat33] | None = None
-  trace_mesh_bvh_id: wp.array[wp.uint64] | None = None
+  mesh_bvh_frame: wp.array1d[wp.mat33] | None = None
+  trace_mesh_bvh_id: wp.array1d[wp.uint64] | None = None
   trace_mesh_registry: list[wp.Mesh] | None = None
   geom_xmat_trace: wp.array2d[wp.mat33] | None = None
   baked: frozenset[str] = DEFAULT_BAKED

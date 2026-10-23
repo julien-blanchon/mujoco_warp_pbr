@@ -21,6 +21,8 @@ mapping along the surface. The derivatives give both the normal-map tangent fram
 texture LOD of a ray cone (Akenine-Möller et al. 2019).
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 
 import mujoco
@@ -54,7 +56,9 @@ def is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
   return bool(np.isin(tex_id, mjm.mat_texid[:, _COLOR_ROLES]))
 
 
-def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> tuple[list[wp.Texture2D], np.ndarray]:
+def upload_textures(
+  mjm: mujoco.MjModel, used: np.ndarray[[int], np.dtype[np.bool_]]
+) -> tuple[list[wp.Texture2D], np.ndarray[[int, 2], np.dtype[np.float32]]]:
   """Creates mipmapped GPU textures for the 2D textures in `used`.
 
   sRGB textures become linear float16 (so filtering and mipmaps are linear); data textures stay
@@ -170,14 +174,14 @@ def frame_from_uv_jacobian(
 @wp.func
 def mesh_triangle_frame(
   # Model:
-  mesh_vertadr: wp.array[int],
-  mesh_faceadr: wp.array[int],
-  mesh_vert: wp.array[wp.vec3],
-  mesh_face: wp.array[wp.vec3i],
+  mesh_vertadr: wp.array1d[int],
+  mesh_faceadr: wp.array1d[int],
+  mesh_vert: wp.array1d[wp.vec3],
+  mesh_face: wp.array1d[wp.vec3i],
   # In:
-  mesh_facetexcoord: wp.array[wp.vec3i],
-  mesh_texcoord: wp.array[wp.vec2],
-  mesh_texcoord_offsets: wp.array[int],
+  mesh_facetexcoord: wp.array1d[wp.vec3i],
+  mesh_texcoord: wp.array1d[wp.vec2],
+  mesh_texcoord_offsets: wp.array1d[int],
   mesh_id: int,
   face_id: int,
   bary_u: float,

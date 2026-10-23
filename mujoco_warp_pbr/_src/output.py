@@ -15,26 +15,39 @@
 
 """Per-camera views of the render outputs."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import mujoco_warp as mjw
 import numpy as np
 import warp as wp
 
 from mujoco_warp_pbr._src.types import PbrRenderContext
 
+if TYPE_CHECKING:
+  from shape_extensions import IntVar
+
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-def get_rgb(rc: PbrRenderContext, camera_index: int, rgb_out: wp.array3d[wp.vec3]) -> None:
+def get_rgb[NWorld: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext, camera_index: int, rgb_out: wp.array[wp.vec3, [NWorld, H, W]]
+) -> None:
   """Writes display RGB in [0, 1] for one camera into rgb_out (nworld, height, width)."""
   mjw.get_rgb(rc.base, camera_index, rgb_out)
 
 
-def get_depth(rc: PbrRenderContext, camera_index: int, depth_scale: float, depth_out: wp.array3d[float]) -> None:
+def get_depth[NWorld: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext, camera_index: int, depth_scale: float, depth_out: wp.array[float, [NWorld, H, W]]
+) -> None:
   """Writes planar depth / depth_scale clamped to [0, 1] for one camera."""
   mjw.get_depth(rc.base, camera_index, depth_scale, depth_out)
 
 
-def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array3d[wp.vec2i]) -> None:
+def get_segmentation[NWorld: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext, camera_index: int, seg_out: wp.array[wp.vec2i, [NWorld, H, W]]
+) -> None:
   """Writes per-pixel (object id, object type) for one camera; background is (-1, -1)."""
   mjw.get_segmentation(rc.base, camera_index, seg_out)
 
@@ -43,7 +56,7 @@ def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array3
 def _extract_hdr(
   # In:
   hdr_data: wp.array2d[wp.vec3],
-  rgb_adr: wp.array[int],
+  rgb_adr: wp.array1d[int],
   camera_index: int,
   # Out:
   hdr_out: wp.array3d[wp.vec3],
@@ -54,7 +67,7 @@ def _extract_hdr(
   hdr_out[worldid, yid, xid] = hdr_data[worldid, rgb_adr[camera_index] + pixelid]
 
 
-def _camera_res(rc: PbrRenderContext) -> np.ndarray:
+def _camera_res(rc: PbrRenderContext) -> np.ndarray[[int, 2], np.dtype[np.int32]]:
   """(nrender, 2) camera resolutions on host (cached per `base.cam_res` array)."""
   cam_res = rc.base.cam_res
   cached = rc._host_cache.get("cam_res")
@@ -64,7 +77,9 @@ def _camera_res(rc: PbrRenderContext) -> np.ndarray:
   return cached[1]
 
 
-def get_hdr(rc: PbrRenderContext, camera_index: int, hdr_out: wp.array3d[wp.vec3]) -> None:
+def get_hdr[NWorld: IntVar, H: IntVar, W: IntVar](
+  rc: PbrRenderContext, camera_index: int, hdr_out: wp.array[wp.vec3, [NWorld, H, W]]
+) -> None:
   """Writes linear HDR radiance (before exposure) for one camera into hdr_out (nworld, h, w).
 
   Needs render_hdr=True.

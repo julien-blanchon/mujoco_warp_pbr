@@ -28,7 +28,7 @@ DFG_LUT_SAMPLES = 1024
 @wp.func
 def hammersley(i: int, inv_n: float) -> wp.vec2:
   bits = wp.uint32(i)
-  bits = (bits << wp.uint32(16)) | (bits >> wp.uint32(16))
+  bits = (bits << wp.uint32(16)) | (bits >> wp.uint32(16))  # pyrefly: ignore[unsupported-operation]  # stubs: no uint32 shifts
   bits = ((bits & wp.uint32(0x55555555)) << wp.uint32(1)) | ((bits & wp.uint32(0xAAAAAAAA)) >> wp.uint32(1))
   bits = ((bits & wp.uint32(0x33333333)) << wp.uint32(2)) | ((bits & wp.uint32(0xCCCCCCCC)) >> wp.uint32(2))
   bits = ((bits & wp.uint32(0x0F0F0F0F)) << wp.uint32(4)) | ((bits & wp.uint32(0xF0F0F0F0)) >> wp.uint32(4))

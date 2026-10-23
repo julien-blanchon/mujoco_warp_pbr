@@ -411,7 +411,7 @@ def build_pathtracer(m: Model, rc: PbrRenderContext) -> wp.Kernel:
       out.hdr[worldid, adr] = hdr
     out.rgb[worldid, adr] = color.encode_display(color.display_transform(hdr * exposure, s.tone_mapper))
 
-  return path_megakernel
+  return path_megakernel  # pyrefly: ignore[bad-return]  # @wp.kernel(...) is untyped: Pyrefly sees the function, Warp returns a Kernel
 
 
 def render(m: Model, d: Data, rc: PbrRenderContext, seed: int) -> None:

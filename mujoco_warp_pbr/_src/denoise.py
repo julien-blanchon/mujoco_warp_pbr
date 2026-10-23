@@ -56,8 +56,8 @@ class Image:
   """Location of the RGB pixels of every rendering camera in the flat per-world buffers."""
 
   nrender: int
-  cam_res: wp.array[wp.vec2i]
-  rgb_adr: wp.array[int]
+  cam_res: wp.array1d[wp.vec2i]
+  rgb_adr: wp.array1d[int]
 
 
 @wp.func
@@ -93,7 +93,7 @@ def _demodulated(c: wp.vec3, albedo: wp.vec3) -> wp.vec3:
 
 
 @wp.kernel(module="unique")
-def _demodulate(hdr: wp.array2d[wp.vec3], exposure: wp.array[float], feat: Features, out: wp.array2d[wp.vec4]):
+def _demodulate(hdr: wp.array2d[wp.vec3], exposure: wp.array1d[float], feat: Features, out: wp.array2d[wp.vec4]):
   worldid, index = wp.tid()
   albedo = wp.vec3(feat.albedo[worldid, index])
   c = hdr[worldid, index] * exposure[worldid % exposure.shape[0]] - feat.emission[worldid, index]
@@ -182,7 +182,7 @@ def _atrous(
 def _finish(
   src: wp.array2d[wp.vec4],
   feat: Features,
-  exposure: wp.array[float],
+  exposure: wp.array1d[float],
   tone_mapper: int,
   render_hdr: bool,
   rgb: wp.array2d[wp.uint32],

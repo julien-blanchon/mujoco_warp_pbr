@@ -151,31 +151,31 @@ assert DEFAULT_BAKED <= BAKE_GROUPS.keys()
 @wp.struct
 class Cameras:
   # Model:
-  cam_projection: wp.array[int]
+  cam_projection: wp.array1d[int]
   cam_fovy: wp.array2d[float]
-  cam_sensorsize: wp.array[wp.vec2]
+  cam_sensorsize: wp.array1d[wp.vec2]
   cam_intrinsic: wp.array2d[wp.vec4]
   # Data:
   cam_xpos: wp.array2d[wp.vec3]
   cam_xmat: wp.array2d[wp.mat33]
   # Render context:
   nrender: int
-  cam_res: wp.array[wp.vec2i]
-  cam_id_map: wp.array[int]
+  cam_res: wp.array1d[wp.vec2i]
+  cam_id_map: wp.array1d[int]
 
 
 @wp.struct
 class Environment:
-  exposure: wp.array[float]
-  ambient_radiance: wp.array[wp.vec3]
+  exposure: wp.array1d[float]
+  ambient_radiance: wp.array1d[wp.vec3]
   background: wp.vec3
   dfg_lut: wp.Texture2D
-  env_radiance: wp.array[wp.Texture2D]
-  env_prefiltered: wp.array[wp.Texture3D]
+  env_radiance: wp.array1d[wp.Texture2D]
+  env_prefiltered: wp.array1d[wp.Texture3D]
   env_sh: wp.array2d[wp.vec3]
-  env_id: wp.array[int]
-  env_intensity: wp.array[float]
-  env_yaw: wp.array[float]
+  env_id: wp.array1d[int]
+  env_intensity: wp.array1d[float]
+  env_yaw: wp.array1d[float]
   env_prob: wp.array3d[float]
   env_marginal: wp.array2d[float]
   env_conditional: wp.array3d[float]
@@ -184,12 +184,12 @@ class Environment:
 
 @wp.struct
 class Outputs:
-  render_rgb: wp.array[bool]
-  render_depth: wp.array[bool]
-  render_seg: wp.array[bool]
-  rgb_adr: wp.array[int]
-  depth_adr: wp.array[int]
-  seg_adr: wp.array[int]
+  render_rgb: wp.array1d[bool]
+  render_depth: wp.array1d[bool]
+  render_seg: wp.array1d[bool]
+  rgb_adr: wp.array1d[int]
+  depth_adr: wp.array1d[int]
+  seg_adr: wp.array1d[int]
   rgb: wp.array2d[wp.uint32]
   depth: wp.array2d[float]
   seg: wp.array2d[wp.vec2i]

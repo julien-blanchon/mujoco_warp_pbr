@@ -19,6 +19,8 @@ The surface is glTF-core metallic-roughness. Extra lobes (clearcoat, sheen, ...)
 fields to `Surface` and terms to the shading functions; nothing else depends on its layout.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 
 import mujoco
@@ -88,7 +90,7 @@ class Surface:
 _DEFAULT_GEOM_RGBA = (0.5, 0.5, 0.5, 1.0)
 
 
-def effective_geom_rgba(mjm: mujoco.MjModel) -> np.ndarray:
+def effective_geom_rgba(mjm: mujoco.MjModel) -> np.ndarray[[int, 4], np.dtype[np.float64]]:
   """(ngeom, 4) rgba each geom renders with (host-side MuJoCo Warp `_geom_rgba`).
 
   A geom with a material that keeps MuJoCo's default rgba shows the material's colour.
@@ -101,7 +103,7 @@ def effective_geom_rgba(mjm: mujoco.MjModel) -> np.ndarray:
   return rgba
 
 
-def _heuristic(rgba: np.ndarray, shininess: float, has_material: bool) -> tuple[float, float, float]:
+def _heuristic(rgba: np.ndarray[[4], np.dtype[np.float64]], shininess: float, has_material: bool) -> tuple[float, float, float]:
   """mujofil-style (metallic, roughness, reflectance) guess from a flat colour."""
   r, g, b = rgba[:3]
   if not has_material:
@@ -131,7 +133,9 @@ def resolve_geom_materials(
   mjm: mujoco.MjModel,
   unset_material: int = UnsetMaterial.GLTF,
   default_material: dict | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+  np.ndarray[[int], np.dtype[np.float32]], np.ndarray[[int], np.dtype[np.float32]], np.ndarray[[int], np.dtype[np.float32]]
+]:
   """Resolves (metallic, perceptual roughness, reflectance) per geom.
 
   Authored material values always win. Unset values (MuJoCo's -1) come from
@@ -192,7 +196,7 @@ class SurfaceFeatures:
     specular_aa: widen roughness by the normal variance across the pixel footprint.
   """
 
-  def __init__(self, mjm: mujoco.MjModel, use_textures: bool, specular_aa: bool, mats: np.ndarray):
+  def __init__(self, mjm: mujoco.MjModel, use_textures: bool, specular_aa: bool, mats: np.ndarray[[int], np.dtype[np.int32]]):
     texid = mjm.mat_texid[mats] if mjm.nmat else np.full((0, int(ROLE.mjNTEXROLE)), -1)
 
     def has(*roles):
@@ -210,7 +214,7 @@ class SurfaceFeatures:
         for t in np.unique(texid[:, int(role)]):
           if t < 0:
             continue
-          w, h, nc = mjm.tex_width[t], mjm.tex_height[t], mjm.tex_nchannel[t]
+          w, h, nc = int(mjm.tex_width[t]), int(mjm.tex_height[t]), int(mjm.tex_nchannel[t])
           data = mjm.tex_data[mjm.tex_adr[t] : mjm.tex_adr[t] + w * h * nc].reshape(-1, nc)
           if channel < nc and np.any(data[:, channel] < 255):
             self.alpha_map = True
@@ -222,27 +226,27 @@ class Materials:
   """Material, texture and mesh-attribute arrays read by surface evaluation."""
 
   # Model:
-  mesh_vertadr: wp.array[int]
-  mesh_faceadr: wp.array[int]
-  mesh_normaladr: wp.array[int]
-  mesh_vert: wp.array[wp.vec3]
-  mesh_normal: wp.array[wp.vec3]
-  mesh_face: wp.array[wp.vec3i]
+  mesh_vertadr: wp.array1d[int]
+  mesh_faceadr: wp.array1d[int]
+  mesh_normaladr: wp.array1d[int]
+  mesh_vert: wp.array1d[wp.vec3]
+  mesh_normal: wp.array1d[wp.vec3]
+  mesh_face: wp.array1d[wp.vec3i]
   mat_texid: wp.array3d[int]
   mat_texuniform: wp.array2d[bool]
   mat_texrepeat: wp.array2d[wp.vec2]
   mat_emission: wp.array2d[float]
   # Render context:
-  mesh_facetexcoord: wp.array[wp.vec3i]
-  mesh_facenormal: wp.array[wp.vec3i]
-  mesh_texcoord: wp.array[wp.vec2]
-  mesh_texcoord_offsets: wp.array[int]
+  mesh_facetexcoord: wp.array1d[wp.vec3i]
+  mesh_facenormal: wp.array1d[wp.vec3i]
+  mesh_texcoord: wp.array1d[wp.vec2]
+  mesh_texcoord_offsets: wp.array1d[int]
   geom_metallic: wp.array2d[float]
   geom_roughness: wp.array2d[float]
   geom_reflectance: wp.array2d[float]
   mat_reflectance: wp.array2d[float]
-  textures: wp.array[wp.Texture2D]
-  tex_size: wp.array[wp.vec2]
+  textures: wp.array1d[wp.Texture2D]
+  tex_size: wp.array1d[wp.vec2]
 
 
 def materials(m: Model, rc: PbrRenderContext) -> Materials:

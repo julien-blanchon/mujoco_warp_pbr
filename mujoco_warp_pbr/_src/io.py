@@ -13,12 +13,15 @@
 # limitations under the License.
 # ==============================================================================
 
+from __future__ import annotations
+
 import dataclasses
 import enum
 import math
 import os
 import warnings
 from collections.abc import Sequence
+from typing import Any
 
 import mujoco
 import mujoco_warp as mjw
@@ -58,6 +61,10 @@ _MESH_BVH_CONSTRUCTORS = ("cubql", "sah", "lbvh")
 _MATERIAL_KEYS = ("metallic", "roughness")
 
 type EnvmapItem = str | os.PathLike | np.ndarray
+# A mesh re-framed to its authored frame: (R (3, 3), R v (nvert, 3), faces (nface, 3)).
+type _MeshFrame = tuple[
+  np.ndarray[[3, 3], np.dtype[np.float64]], np.ndarray[[int, 3], np.dtype[np.float64]], np.ndarray[[int, 3], np.dtype[np.int32]]
+]
 
 
 def _enum[E: enum.IntEnum](cls: type[E], value: int, name: str) -> E:
@@ -82,7 +89,7 @@ def _check_default_material(default_material: dict | None):
 
 
 def _warn_unsupported(mjm: mujoco.MjModel):
-  if mjm.nflex and np.any(mjm.mat_texid[:, mujoco.mjtTextureRole.mjTEXROLE_NORMAL] >= 0):
+  if mjm.nflex and np.any(mjm.mat_texid[:, int(mujoco.mjtTextureRole.mjTEXROLE_NORMAL)] >= 0):
     warnings.warn("flex geometry is rendered without normal maps", stacklevel=3)
   image_lights = np.nonzero(mjm.light_type == lights.LIGHT_IMAGE)[0]
   if image_lights.size:
@@ -90,7 +97,11 @@ def _warn_unsupported(mjm: mujoco.MjModel):
 
 
 def _select_traversal(
-  mjm: mujoco.MjModel, enabled_geom_groups: Sequence[int], tier: Tier, traversal: str, rendered: np.ndarray
+  mjm: mujoco.MjModel,
+  enabled_geom_groups: Sequence[int],
+  tier: Tier,
+  traversal: str,
+  rendered: np.ndarray[[int], np.dtype[np.bool_]],
 ) -> str:
   """Resolves traversal="auto" and falls back from "optix" when it cannot render the model."""
   if traversal == "software":
@@ -109,14 +120,16 @@ def _select_traversal(
   return traversal
 
 
-def _bbox_area_sum(points: np.ndarray, faces: np.ndarray) -> float:
+def _bbox_area_sum(
+  points: np.ndarray[[int, 3], np.dtype[np.float64]], faces: np.ndarray[[int, 3], np.dtype[np.int32]]
+) -> float:
   """Summed surface area of the triangles' axis-aligned bounding boxes (a BVH cost proxy)."""
   tri = points[faces]
   e = tri.max(axis=1) - tri.min(axis=1)
   return float(np.sum(e[:, 0] * e[:, 1] + e[:, 1] * e[:, 2] + e[:, 2] * e[:, 0]))
 
 
-def _mesh_frames(mjm: mujoco.MjModel) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+def _mesh_frames(mjm: mujoco.MjModel) -> dict[int, _MeshFrame]:
   """Authored-frame rotations of the meshes whose BVH they improve: {mesh_id: (R, R v, faces)}.
 
   MuJoCo's mesh frame is the principal inertia frame; R (from mesh_quat) rotates its vertices v
@@ -161,8 +174,8 @@ def _rebuild_mesh_bvhs(mjm: mujoco.MjModel, base: mjw.RenderContext, constructor
 
 
 def _mesh_bvh_frames(
-  mjm: mujoco.MjModel, base: mjw.RenderContext, nworld: int, selected: dict, constructor: str, traversal: str
-) -> dict:
+  mjm: mujoco.MjModel, base: mjw.RenderContext, nworld: int, selected: dict[int, _MeshFrame], constructor: str, traversal: str
+) -> dict[str, Any]:
   """PbrRenderContext fields of the meshes traced in their authored frame (see trace.py).
 
   The software traversal gets re-framed Warp mesh BVHs; the OptiX backend only the rotations (it
@@ -195,10 +208,10 @@ def _mesh_bvh_frames(
 @dataclasses.dataclass
 class _Lighting:
   exposure: float
-  light_intensity: np.ndarray
+  light_intensity: np.ndarray[[int], np.dtype[np.float32]]
   # Headlight illuminance times exposure (display-relative, see PbrRenderContext).
   headlight_intensity: float
-  ambient: np.ndarray
+  ambient: np.ndarray[[3], np.dtype[np.float32]]
 
 
 def _resolve_lighting(mjm: mujoco.MjModel, light_model: LightModel, ev100: float) -> _Lighting:
@@ -229,7 +242,7 @@ def _resolve_lighting(mjm: mujoco.MjModel, light_model: LightModel, ev100: float
   return _Lighting(exposure, light_intensity, math.pi, ambient)
 
 
-def _envmap_images(envmap: EnvmapItem | Sequence[EnvmapItem] | None) -> list[np.ndarray]:
+def _envmap_images(envmap: EnvmapItem | Sequence[EnvmapItem] | None) -> list[envmap_lib.Image]:
   if envmap is None:
     return []
   items = envmap if isinstance(envmap, (list, tuple)) else [envmap]
@@ -267,7 +280,11 @@ def _build_environment(
 
 
 def _surface_flags(
-  mjm: mujoco.MjModel, rendered: np.ndarray, rendered_mats: np.ndarray, features: material.SurfaceFeatures, reflections: bool
+  mjm: mujoco.MjModel,
+  rendered: np.ndarray[[int], np.dtype[np.bool_]],
+  rendered_mats: np.ndarray[[int], np.dtype[np.int32]],
+  features: material.SurfaceFeatures,
+  reflections: bool,
 ) -> tuple[bool, bool]:
   """(has_transparency, has_reflection) of the rendered geoms."""
   alpha = material.effective_geom_rgba(mjm)[rendered, 3]
@@ -531,7 +548,7 @@ def create_render_context(
   npixel = base.rgb_data.shape[1]
   aov_pixels = npixel if denoise else 1
 
-  def per_world(values: np.ndarray) -> wp.array:
+  def per_world(values: np.ndarray[[int], np.dtype[Any]]) -> wp.array[float, [1, int]]:
     """A (1, n) batched float array: shared by every world until replaced."""
     return wp.array(np.asarray(values, dtype=np.float32).reshape(1, -1), dtype=float)
 

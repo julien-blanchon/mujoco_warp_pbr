@@ -27,12 +27,15 @@ For each map we keep
     lobe and 1/π (Ramamoorthi & Hanrahan 2001), so they evaluate to Lambertian radiance.
 """
 
+from __future__ import annotations
+
 import concurrent.futures
 import dataclasses
 import math
 import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import mujoco
 import numpy as np
@@ -44,6 +47,15 @@ from mujoco_warp_pbr._src import brdf
 from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src.color import LUMINANCE_WEIGHTS
 from mujoco_warp_pbr._src.color import srgb_eotf
+
+if TYPE_CHECKING:
+  from shape_extensions import Int
+  from shape_extensions import IntVar
+
+# A linear radiance image, (height, width, 3) float32 (what load_hdr returns). Type-checking only.
+type HdrImage[H: IntVar, W: IntVar] = np.ndarray[[H, W, 3], np.dtype[np.float32]]
+# An image as accepted on input: (height, width, channels), any dtype (extra channels are ignored).
+type Image = np.ndarray[[int, int, int], np.dtype[Any]]
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -59,7 +71,9 @@ _MAX_PREFILTER_THREADS = 16
 CDF_WIDTH = 256
 
 
-def _decode_rle_scanline(data: bytes, pos: int, width: int, path: str, y: int) -> tuple[np.ndarray, int]:
+def _decode_rle_scanline[W: IntVar](
+  data: bytes, pos: int, width: Int[W], path: str, y: int
+) -> tuple[np.ndarray[[W, 4], np.dtype[np.uint8]], int]:
   """Decodes the adaptive run-length encoded RGBE scanline at `pos`: (rgbe (width, 4), end)."""
   line = bytearray(4 * width)
   n = len(data)
@@ -88,7 +102,7 @@ def _decode_rle_scanline(data: bytes, pos: int, width: int, path: str, y: int) -
   return np.frombuffer(bytes(line), dtype=np.uint8).reshape(4, width).T, pos
 
 
-def load_hdr(path: str | Path) -> np.ndarray:
+def load_hdr(path: str | Path) -> HdrImage[int, int]:
   """Reads a Radiance RGBE (.hdr) file as float32 (height, width, 3) linear radiance.
 
   Raises:
@@ -127,7 +141,9 @@ def load_hdr(path: str | Path) -> np.ndarray:
   return rgbe[..., :3].astype(np.float32) * scale[..., None]
 
 
-def _downsample(image: np.ndarray, max_width: int) -> np.ndarray:
+def _downsample[C: IntVar, D: np.generic](
+  image: np.ndarray[[int, int, C], np.dtype[D]], max_width: int
+) -> np.ndarray[[int, int, C], np.dtype[Any]]:
   while image.shape[1] > max_width:
     h, w = image.shape[0] // 2 * 2, image.shape[1] // 2 * 2
     image = image[:h, :w].reshape(h // 2, 2, w // 2, 2, -1).mean(axis=(1, 3))
@@ -204,7 +220,7 @@ def _prefilter(
   stack_out[level, y, x, 3] = wp.float16(1.0)
 
 
-def _sh9_irradiance(image: np.ndarray) -> np.ndarray:
+def _sh9_irradiance(image: np.ndarray[[int, int, 3], np.dtype[Any]]) -> np.ndarray[[9, 3], np.dtype[np.float32]]:
   """SH9 coefficients of Lambertian radiance (irradiance / π) for an equirect radiance image."""
   h, w, _ = image.shape
   theta = (np.arange(h) + 0.5) / h * np.pi
@@ -302,7 +318,7 @@ def _skybox_to_equirect(
     image_out[y, x, i] = srgb_eotf(c[i])
 
 
-def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> np.ndarray | None:
+def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> HdrImage[int, int] | None:
   """The model's skybox as a linear equirect image, or None if it has none."""
   ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else []
   if len(ids) == 0:
@@ -311,10 +327,11 @@ def skybox_image(mjm: mujoco.MjModel, width: int = 1024) -> np.ndarray | None:
   tex = create_warp_texture(mjm, tex_id)
   image = wp.zeros((width // 2, width, 3), dtype=float)
   wp.launch(_skybox_to_equirect, dim=(width // 2, width), inputs=[tex, 1.0 / float(mjm.tex_width[tex_id])], outputs=[image])
-  return image.numpy()
+  # wp.array.numpy() has no declared return type in the stubs: restate its dtype and shape.
+  return cast("HdrImage[int, int]", image.numpy())
 
 
-def _launch_prefilter(radiance: wp.Texture2D, width: int, height: int, stack: wp.array):
+def _launch_prefilter(radiance: wp.Texture2D, width: int, height: int, stack: wp.array4d[wp.float16]) -> None:
   """Runs `_prefilter` over the stack; on the CPU in row bands on several threads.
 
   Warp runs a CPU launch on one thread (and releases the GIL meanwhile): prefiltering a 1k map
@@ -346,7 +363,12 @@ def _launch_prefilter(radiance: wp.Texture2D, width: int, height: int, stack: wp
 class EnvironmentMap:
   """GPU resources for one environment map."""
 
-  def __init__(self, image: np.ndarray):
+  radiance: wp.Texture2D
+  prefiltered: wp.Texture3D
+  sh: np.ndarray[[9, 3], np.dtype[np.float32]]
+  width: int
+
+  def __init__(self, image: Image):
     image = _downsample(np.asarray(image, dtype=np.float32)[..., :3], MAX_RADIANCE_WIDTH)
     h, w, _ = image.shape
     rgba = np.concatenate([image, np.ones((h, w, 1), np.float32)], axis=-1).astype(np.float16)
@@ -372,7 +394,13 @@ class EnvironmentMap:
     self.width = w
 
 
-def sampling_distribution(image: np.ndarray, width: int = CDF_WIDTH) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def sampling_distribution(
+  image: Image, width: int = CDF_WIDTH
+) -> tuple[
+  np.ndarray[[int, int], np.dtype[np.float32]],
+  np.ndarray[[int], np.dtype[np.float32]],
+  np.ndarray[[int, int], np.dtype[np.float32]],
+]:
   """Piecewise-constant distribution over equirect cells ∝ luminance · sin θ.
 
   Returns (cell probabilities (h, w), marginal row CDF (h + 1,), conditional column CDFs
@@ -469,8 +497,8 @@ class Environments:
   """
 
   maps: list
-  radiance: wp.array[wp.Texture2D]
-  prefiltered: wp.array[wp.Texture3D]
+  radiance: wp.array1d[wp.Texture2D]
+  prefiltered: wp.array1d[wp.Texture3D]
   sh: wp.array2d[wp.vec3]
   width: float
   prob: wp.array3d[float]
@@ -478,7 +506,7 @@ class Environments:
   conditional: wp.array3d[float]
 
 
-def build_environments(images: list[np.ndarray]) -> Environments:
+def build_environments(images: list[Image]) -> Environments:
   """GPU resources for a list of environment maps (sampling tables share one resolution)."""
   maps = [EnvironmentMap(im) for im in images]
   shape = None
@@ -525,7 +553,9 @@ def _downsampled_shape(shape: tuple[int, ...], max_width: int) -> tuple[int, int
   return h, w
 
 
-def _resize_nearest(image: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+def _resize_nearest[C: IntVar, D: np.generic](
+  image: np.ndarray[[int, int, C], np.dtype[D]], shape: tuple[int, int]
+) -> np.ndarray[[int, int, C], np.dtype[D]]:
   h, w = shape
   ys = (np.arange(h) + 0.5) / h * image.shape[0]
   xs = (np.arange(w) + 0.5) / w * image.shape[1]

@@ -415,7 +415,7 @@ def _build_megakernel(m: Model, rc: PbrRenderContext) -> wp.Kernel:
     worldid, rayid = camera.thread_ids(resolve(env).render_order, i, j)
     render_pixel(geo, mats, lit, cams, env, seed, out, worldid, rayid)
 
-  return render_megakernel
+  return render_megakernel  # pyrefly: ignore[bad-return]  # @wp.kernel(...) is untyped: Pyrefly sees the function, Warp returns a Kernel
 
 
 @event_scope

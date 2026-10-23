@@ -142,7 +142,8 @@ def fallback_intensity(mjm: mujoco.MjModel, mjd: mujoco.MjData, light_id: int, e
   illuminance = math.pi / exposure
   if mjm.light_type[light_id] == LIGHT_DIRECTIONAL:
     return illuminance
-  distance = float(np.linalg.norm(mjd.light_xpos[light_id] - mjm.stat.center))
+  # numpy stubs: `floating` (norm of an unknown-shape array) does not satisfy SupportsFloat.
+  distance = float(np.linalg.norm(mjd.light_xpos[light_id] - mjm.stat.center))  # pyrefly: ignore[bad-argument-type]
   distance = max(distance, 0.1 * float(mjm.stat.extent), 1e-3)
   return illuminance * distance * distance
 
