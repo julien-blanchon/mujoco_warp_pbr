@@ -6,6 +6,10 @@
   --preset score`): material grid, primitives and DamagedHelmet at 1024 / 4096 worlds and
   64² / 128², plus one 2×2-supersampled config, with an HDR environment and per-world camera
   jitter (3 cm, 2°).
+
+  Correction: `sweep.py --preset score` never passed `--jitter-camera`, and every row in
+  `results/score.jsonl`, the `m7-jitter-*` labels included, records `"jitter_camera": false`.
+  The scores below were measured with identical cameras in every world.
 - **Hardware:** one GH200. Rows are in `results/score.jsonl` under the labels below.
 - **Keep rule:** an idea is kept if the score improves and no scene regresses beyond noise;
   discarded ideas are listed too.

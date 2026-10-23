@@ -1,7 +1,7 @@
 # M5 — real-time tier baseline (2026-10-22)
 
 Hardware: 1× NVIDIA GH200 (Hopper, no RT cores). Warp 1.18.0, MuJoCo 3.17, mujoco_warp @ 6c33934,
-Newton 1.7.0, Mitsuba 3.9.1. Raw data: `results/compare.jsonl`, `results/score.jsonl`,
+Newton 1.7.0, Mitsuba 3.9.1. Raw data: `results/history/compare.jsonl`, `results/score.jsonl`,
 `results/validation/`.
 
 ## Quality vs Mitsuba 3 (`benchmarks/validate.py`, 256², Mitsuba `direct` 1024 spp)
@@ -30,7 +30,7 @@ different material model).
 - Mitsuba's principled BSDF loses energy at high roughness and uses Burley diffuse; Filament's
   model (ours) is energy-compensated, hence the larger gaps in the "principled" column.
 
-## Speed (`benchmarks/sweep.py --preset compare`, CUDA graph, median of 5 × 20 frames)
+## Speed (`benchmarks/sweep.py --preset compare`, since replaced by `benchmarks/suite.py`; CUDA graph, median of 5 × 20 frames)
 
 Milliseconds per batch (one 64² or 128² camera per world). Ours: PBR with HDRI, ray-traced
 shadows, textures, specular AA. mujoco_warp: its renderer with shadows on (Lambert + Phong).

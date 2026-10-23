@@ -22,7 +22,7 @@ Mitsuba renders with a plugin of our BRDF, so both sides integrate the same mate
 
 Residuals are Monte-Carlo noise of both renderers, the 2 cm default MuJoCo bulb radius (soft point
 lights for us, true points for Mitsuba) and, for normal_tangent, Mitsuba's own normal-map frame.
-Compared with the real-time tier (`results/m5_baseline.md`), environment visibility and
+Compared with the real-time tier (`results/history/m5_baseline.md`), environment visibility and
 interreflections remove most of the IBL-scene error (grid_env 0.116 → 0.016).
 
 Two issues found and fixed while validating: the segment after the last bounce must still be
