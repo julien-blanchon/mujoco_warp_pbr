@@ -455,7 +455,8 @@ def launch_dim(rc: PbrRenderContext, nworld: int) -> tuple[int, int]:
 def check_env_id(rc: PbrRenderContext):
   """Raises if a (replaced) `env_id` selects a missing environment map; checked once per array."""
   env_id = rc.env_id
-  if rc._host_cache.get("env_id") is env_id or (env_id.device.is_cuda and wp.get_stream(env_id.device).is_capturing):
+  device = env_id.device
+  if rc._host_cache.get("env_id") is env_id or (device is not None and device.is_cuda and wp.get_stream(device).is_capturing):
     return
   ids = env_id.numpy()
   nenv = rc.env_radiance.shape[0]

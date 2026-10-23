@@ -19,6 +19,7 @@ import math
 from typing import Callable
 
 import numpy as np
+import numpy.typing as npt
 import warp as wp
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 
@@ -92,7 +93,7 @@ def luminance(c: wp.vec3) -> float:
   return wp.dot(c, wp.static(wp.vec3(*LUMINANCE_WEIGHTS)))
 
 
-def srgb_to_linear(x: np.ndarray) -> np.ndarray:
+def srgb_to_linear(x: npt.ArrayLike) -> np.ndarray:
   """SRGB display values in [0, 1] -> linear (host-side `srgb_eotf`)."""
   x = np.asarray(x, dtype=np.float64)
   return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)

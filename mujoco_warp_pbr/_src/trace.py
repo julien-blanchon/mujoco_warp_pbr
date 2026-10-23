@@ -171,7 +171,7 @@ def software_geometry(m: Model, d: Data, rc: PbrRenderContext) -> Geometry:
   The re-framed geom frames are refreshed by `update_trace_frames`, once per frame.
   """
   geo = geometry(m, d, rc.base)
-  if rc.mesh_bvh_frame is not None:
+  if rc.geom_xmat_trace is not None and rc.trace_mesh_bvh_id is not None:
     geo.geom_xmat_trace = rc.geom_xmat_trace
     geo.mesh_bvh_id = rc.trace_mesh_bvh_id
   return geo
@@ -179,7 +179,7 @@ def software_geometry(m: Model, d: Data, rc: PbrRenderContext) -> Geometry:
 
 def update_trace_frames(m: Model, d: Data, rc: PbrRenderContext) -> None:
   """Writes `rc.geom_xmat_trace` from the current geom frames (re-framed mesh BVHs only)."""
-  if rc.mesh_bvh_frame is not None:
+  if rc.mesh_bvh_frame is not None and rc.geom_xmat_trace is not None:
     wp.launch(
       _mesh_trace_frames,
       dim=(d.nworld, m.ngeom),

@@ -24,17 +24,17 @@ from mujoco_warp_pbr._src.types import PbrRenderContext
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-def get_rgb(rc: PbrRenderContext, camera_index: int, rgb_out: wp.array) -> None:
+def get_rgb(rc: PbrRenderContext, camera_index: int, rgb_out: wp.array3d[wp.vec3]) -> None:
   """Writes display RGB in [0, 1] for one camera into rgb_out (nworld, height, width)."""
   mjw.get_rgb(rc.base, camera_index, rgb_out)
 
 
-def get_depth(rc: PbrRenderContext, camera_index: int, depth_scale: float, depth_out: wp.array) -> None:
+def get_depth(rc: PbrRenderContext, camera_index: int, depth_scale: float, depth_out: wp.array3d[float]) -> None:
   """Writes planar depth / depth_scale clamped to [0, 1] for one camera."""
   mjw.get_depth(rc.base, camera_index, depth_scale, depth_out)
 
 
-def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array) -> None:
+def get_segmentation(rc: PbrRenderContext, camera_index: int, seg_out: wp.array3d[wp.vec2i]) -> None:
   """Writes per-pixel (object id, object type) for one camera; background is (-1, -1)."""
   mjw.get_segmentation(rc.base, camera_index, seg_out)
 
@@ -64,7 +64,7 @@ def _camera_res(rc: PbrRenderContext) -> np.ndarray:
   return cached[1]
 
 
-def get_hdr(rc: PbrRenderContext, camera_index: int, hdr_out: wp.array) -> None:
+def get_hdr(rc: PbrRenderContext, camera_index: int, hdr_out: wp.array3d[wp.vec3]) -> None:
   """Writes linear HDR radiance (before exposure) for one camera into hdr_out (nworld, h, w).
 
   Needs render_hdr=True.

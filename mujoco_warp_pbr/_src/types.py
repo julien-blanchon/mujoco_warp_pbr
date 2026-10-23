@@ -239,34 +239,34 @@ class PbrRenderContext:
   tone_mapper: int
   use_shadows: bool
   shadow_light_fraction: float
-  geom_metallic: wp.array
-  geom_roughness: wp.array
-  geom_reflectance: wp.array
-  mat_reflectance: wp.array
-  light_intensity: wp.array
-  light_range: wp.array
-  light_bulbradius: wp.array
+  geom_metallic: wp.array2d[float]
+  geom_roughness: wp.array2d[float]
+  geom_reflectance: wp.array2d[float]
+  mat_reflectance: wp.array2d[float]
+  light_intensity: wp.array2d[float]
+  light_range: wp.array2d[float]
+  light_bulbradius: wp.array2d[float]
   headlight_intensity: float
-  exposure: wp.array
-  ambient_radiance: wp.array
+  exposure: wp.array[float]
+  ambient_radiance: wp.array[wp.vec3]
   dfg_lut: wp.Texture2D
   background_linear: wp.vec3
   has_env: bool
   env_background: bool
   env_maps: list
-  env_radiance: wp.array
-  env_prefiltered: wp.array
-  env_sh: wp.array
+  env_radiance: wp.array[wp.Texture2D]
+  env_prefiltered: wp.array[wp.Texture3D]
+  env_sh: wp.array2d[wp.vec3]
   env_texel_angle: float
-  env_id: wp.array
-  env_intensity: wp.array
-  env_yaw: wp.array
-  env_prob: wp.array
-  env_marginal: wp.array
-  env_conditional: wp.array
-  textures: wp.array
+  env_id: wp.array[int]
+  env_intensity: wp.array[float]
+  env_yaw: wp.array[float]
+  env_prob: wp.array3d[float]
+  env_marginal: wp.array2d[float]
+  env_conditional: wp.array3d[float]
+  textures: wp.array[wp.Texture2D]
   textures_registry: list
-  tex_size: wp.array
+  tex_size: wp.array[wp.vec2]
   features: "SurfaceFeatures"
   samples_per_pixel: int
   shadow_samples: int
@@ -283,14 +283,14 @@ class PbrRenderContext:
   rr_depth: int
   denoise: bool
   denoise_iterations: int
-  aov_albedo: wp.array
-  aov_normal: wp.array
-  aov_depth: wp.array
-  aov_emission: wp.array
-  aov_variance: wp.array
-  denoise_buffers: tuple[wp.array, wp.array]
+  aov_albedo: wp.array2d[wp.vec3h]
+  aov_normal: wp.array2d[wp.vec3h]
+  aov_depth: wp.array2d[float]
+  aov_emission: wp.array2d[wp.vec3]
+  aov_variance: wp.array2d[float]
+  denoise_buffers: tuple[wp.array2d[wp.vec4], wp.array2d[wp.vec4]]
   render_hdr: bool
-  hdr_data: wp.array
+  hdr_data: wp.array2d[wp.vec3]
   traversal: str = "software"
   denoise_sigma_color: float = 4.0
   denoise_sigma_normal: float = 128.0
@@ -299,10 +299,10 @@ class PbrRenderContext:
   optix_rebuild_every: int = 0
   optix_max_registers: Optional[int] = None
   optix_graph_capture: bool = False
-  mesh_bvh_frame: Optional[wp.array] = None
-  trace_mesh_bvh_id: Optional[wp.array] = None
-  trace_mesh_registry: Optional[list] = None
-  geom_xmat_trace: Optional[wp.array] = None
+  mesh_bvh_frame: Optional[wp.array[wp.mat33]] = None
+  trace_mesh_bvh_id: Optional[wp.array[wp.uint64]] = None
+  trace_mesh_registry: Optional[list[wp.Mesh]] = None
+  geom_xmat_trace: Optional[wp.array2d[wp.mat33]] = None
   baked: frozenset[str] = DEFAULT_BAKED
   _megakernel: Optional[wp.Kernel] = None
   _megakernel_key: Optional[tuple] = None
