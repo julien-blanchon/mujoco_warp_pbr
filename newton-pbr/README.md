@@ -7,6 +7,16 @@ ray-traced shadows, batched over all worlds.
 
 Both are drop-in replacements: switch with one import or one constructor.
 
+**Differences from Newton** (details in the table below):
+- particles, cloth / deformable meshes and Gaussians are not rendered (warned once);
+- every world must have the same visible shapes;
+- `RenderConfig.enable_global_world=False` and `TextureProjectionMode.TRIPLANAR` are not
+  supported (warned once);
+- without `create_default_light`, `lights` or `envmap`, a default key and fill light are used
+  (Newton's sensor then has ambient light only);
+- `color_image` is PBR shaded and tone mapped, `hdr_color_image` is exposed linear radiance, so
+  colours differ from Newton's (geometry outputs match: depth, shape index, normal, albedo).
+
 ## Camera sensor
 
 ```python
