@@ -18,14 +18,17 @@
 Every program of a specialised build lives in one uniquely named Warp module compiled to PTX:
 - `__raygen__`: one launch index per (world, ray); calls `render.make_render_pixel`'s func, whose
   ray queries are the OptiX `trace_closest` / `trace_any` (`optix/trace.py`);
-- `__miss__`, `__closesthit__` (triangles, custom primitives) and one `__intersection__` per
-  primitive geom type, which run MuJoCo Warp's `ray_*` functions in the geom frame.
+- `__miss__`, `__closesthit__` (triangles, curves, custom primitives) and one `__intersection__`
+  per custom-primitive geom type, which run MuJoCo Warp's `ray_*` functions; curves use OptiX's
+  built-in intersector.
 
 All programs take the same `Params` struct, OptiX's launch parameters. A small Warp kernel copies
 the struct into the device parameter buffer before each launch, so a frame (instance update, IAS
 refit, parameter copy, optixLaunch) is enqueued on Warp's stream without host synchronisation.
-CUDA stream capture does not record the OptiX launch itself, so `render` refuses to run inside a
-graph capture.
+
+CUDA graphs: stream capture cannot record OptiX calls (see `graph.py`). Inside a capture the
+Warp kernels of a frame are captured as usual and the OptiX calls (refits, optixLaunch) run on a
+worker thread, triggered by two host nodes of the graph (`graph.Bridge`).
 """
 
 import copy
@@ -56,6 +59,7 @@ from mujoco_warp_pbr._src.kernel_inputs import Outputs
 from mujoco_warp_pbr._src.material import Materials
 from mujoco_warp_pbr._src.optix import accel
 from mujoco_warp_pbr._src.optix import device
+from mujoco_warp_pbr._src.optix import graph
 from mujoco_warp_pbr._src.optix import trace as rt_trace
 from mujoco_warp_pbr._src.trace import Geometry
 from mujoco_warp_pbr._src.types import PbrRenderContext
@@ -83,6 +87,7 @@ class Params:
   out: Outputs
   seed: int
   nworld: int
+  curve_geom: wp.array[int]
   prim_geom: wp.array[int]
   prim_visible: wp.array[wp.int32]
 
@@ -110,7 +115,9 @@ def _build_programs(m: Model, rc: PbrRenderContext, scene: accel.Scene, closest_
   module = f"mujoco_warp_pbr_optix_{next(_names)}"
   base = rc.base
   cull = bool(base.enable_backface_culling)
-  trace_closest, trace_any = rt_trace.make_trace(scene.plane_ids, scene.has_mesh, scene.has_instances, cull, closest_ray_flags)
+  trace_closest, trace_any = rt_trace.make_trace(
+    scene.plane_ids, scene.has_mesh, scene.has_box, scene.has_instances, cull, closest_ray_flags
+  )
   render_pixel = render_lib.make_render_pixel(m, rc, trace_closest, trace_any)
   world_order = rc.render_order == RenderOrder.WORLD
   total_rays = base.total_rays
@@ -137,6 +144,13 @@ def _build_programs(m: Model, rc: PbrRenderContext, scene: accel.Scene, closest_
   @_program(module, "__closesthit__custom")
   def closesthit_custom(p: Params):
     wp.mjpbr_optix_closesthit_custom()
+
+  if scene.has_curves:
+
+    @_program(module, "__closesthit__curve")
+    def closesthit_curve(p: Params):
+      d, n, code = rt_trace.curve_hit(p.geo, p.curve_geom)
+      wp.mjpbr_optix_set_hit(d, code, wp.mjpbr_optix_primitive_index(), n)
 
   def intersection_program(gtype: int):
     intersect = rt_trace.make_intersection(gtype, cull)
@@ -175,7 +189,7 @@ def _entry_names(ptx: bytes) -> dict:
 class Pipeline:
   """Compiled OptiX module, program groups, pipeline and shader binding table."""
 
-  def __init__(self, ctx, module_name: str, primitive_types: tuple, max_registers: int):
+  def __init__(self, ctx, module_name: str, scene: accel.Scene, max_registers: int):
     import optix
 
     self.ctx = ctx
@@ -191,7 +205,11 @@ class Pipeline:
       numAttributeValues=device.NUM_ATTRIBUTE,
       exceptionFlags=int(optix.EXCEPTION_FLAG_NONE),
       pipelineLaunchParamsVariableName="params",
-      usesPrimitiveTypeFlags=int(optix.PRIMITIVE_TYPE_FLAGS_TRIANGLE | optix.PRIMITIVE_TYPE_FLAGS_CUSTOM),
+      usesPrimitiveTypeFlags=int(
+        optix.PRIMITIVE_TYPE_FLAGS_TRIANGLE
+        | optix.PRIMITIVE_TYPE_FLAGS_CUSTOM
+        | (optix.PRIMITIVE_TYPE_FLAGS_ROUND_LINEAR if scene.has_curves else 0)
+      ),
     )
     mco = optix.ModuleCompileOptions(
       maxRegisterCount=int(max_registers) if max_registers else optix.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
@@ -219,8 +237,24 @@ class Pipeline:
 
     raygen = group(raygenModule=self.module, raygenEntryFunctionName=entries["__raygen__render"])
     miss = group(missModule=self.module, missEntryFunctionName=entries["__miss__render"])
+    # SBT order: triangles, curves (scene.curve_sbt), custom types (from scene.custom_sbt).
     hitgroups = [group(hitgroupModuleCH=self.module, hitgroupEntryFunctionNameCH=entries["__closesthit__triangle"])]
-    for gtype in primitive_types:
+    if scene.has_curves:
+      curve_options = optix.BuiltinISOptions(
+        builtinISModuleType=optix.PRIMITIVE_TYPE_ROUND_LINEAR,
+        usesMotionBlur=False,
+        buildFlags=accel.dynamic_build_flags(),
+        curveEndcapFlags=0,  # round end caps (the default for linear curves)
+      )
+      self.curve_module = ctx.builtinISModuleGet(mco, pco, curve_options)
+      hitgroups.append(
+        group(
+          hitgroupModuleCH=self.module,
+          hitgroupEntryFunctionNameCH=entries["__closesthit__curve"],
+          hitgroupModuleIS=self.curve_module,
+        )
+      )
+    for gtype in scene.primitive_types:
       hitgroups.append(
         group(
           hitgroupModuleCH=self.module,
@@ -265,11 +299,15 @@ class Pipeline:
     self.params = wp.zeros(1, dtype=Params)
     self.params_size = int(wp.types.type_size_in_bytes(Params))
 
-  def launch(self, params: Params, width: int):
+  def store(self, params: Params):
+    """Copies the launch parameters into the device buffer read by `trace` (a Warp kernel)."""
+    wp.launch(_store_params, dim=1, inputs=[params, self.params])
+
+  def trace(self, stream: "wp.Stream", width: int):
+    """Launches the pipeline (`optixLaunch`) over `width` launch indices on `stream`."""
     import optix
 
-    wp.launch(_store_params, dim=1, inputs=[params, self.params])
-    optix.launch(self.pipeline, int(wp.get_stream().cuda_stream), self.params.ptr, self.params_size, self.sbt, width, 1, 1)
+    optix.launch(self.pipeline, int(stream.cuda_stream), self.params.ptr, self.params_size, self.sbt, width, 1, 1)
 
 
 def _make_downsample(rc: PbrRenderContext, n: int) -> wp.Kernel:
@@ -372,19 +410,40 @@ class OptixRenderer:
     self.rc_hi = _supersampled_context(rc, n) if self.supersample else None
     self.downsample = _make_downsample(rc, n) if self.supersample else None
     rc_prog = self.rc_hi if self.supersample else rc
-    self.scene = accel.Scene(m, rc.base, d.nworld, rebuild_every=rc.optix_rebuild_every)
+    mesh_frame = rc.mesh_bvh_frame.numpy() if rc.mesh_bvh_frame is not None else None
+    self.scene = accel.Scene(m, rc.base, d.nworld, rebuild_every=rc.optix_rebuild_every, mesh_frame=mesh_frame)
     cull = bool(rc.base.enable_backface_culling)
     flags = int(optix.RAY_FLAG_CULL_BACK_FACING_TRIANGLES) if cull else 0
     module = _build_programs(m, rc_prog, self.scene, flags)
-    self.pipeline = Pipeline(self.scene.ctx, module, self.scene.primitive_types, rc.optix_max_registers)
+    registers = rc.optix_max_registers
+    if registers is None:
+      registers = 96 if rc.has_reflection else 64
+    self.pipeline = Pipeline(self.scene.ctx, module, self.scene, registers)
     self.nworld = d.nworld
+    self.width = d.nworld * rc_prog.base.total_rays
     self.params = Params()
+    self.params.curve_geom = self.scene.curve_geom
     self.params.prim_geom = self.scene.prim_geom
     self.params.prim_visible = self.scene.prim_visible
     self.part_keys = {}
+    self.bridge = None
+    self.captured_handle = None
+
+  def graph_work(self, stream: "wp.Stream"):
+    """The OptiX calls of a frame (refits, optixLaunch) on `stream`; run by `graph.Bridge`."""
+    self.scene.build(stream)
+    if self.scene.handle != self.captured_handle:
+      raise RuntimeError("the OptiX IAS handle changed after the graph was captured")
+    self.pipeline.trace(stream, self.width)
 
   def render(self, m: Model, d: Data, rc: PbrRenderContext, seed: int):
-    self.scene.update(m, d)
+    stream = wp.get_stream()
+    capturing = stream.is_capturing
+    if self.bridge is not None:
+      self.bridge.raise_error()
+    self.scene.write(m, d)
+    if not capturing:
+      self.scene.build(stream)
     rc_prog = rc
     if self.supersample:
       # Per-frame values the caller may have replaced on rc (materials, lights, environment).
@@ -392,6 +451,7 @@ class OptixRenderer:
       rc_prog.hdr_data = self.rc_hi.hdr_data
       rc_prog.base.seg_data.fill_(wp.vec2i(-1, -1))
     geo = trace.geometry(m, d, rc.base)
+    # Refits keep the IAS handle; a captured graph checks that it did not change (graph_work).
     geo.rt_handle = wp.uint64(self.scene.handle)
     geo.rt_frame = self.scene.frame
     geo.rt_grid = wp.vec3i(*self.scene.grid)
@@ -411,7 +471,14 @@ class OptixRenderer:
         self.part_keys[name] = key
     self.params.seed = int(seed)
     self.params.nworld = d.nworld
-    self.pipeline.launch(self.params, d.nworld * rc_prog.base.total_rays)
+    self.pipeline.store(self.params)
+    if capturing:
+      if self.bridge is None:
+        self.bridge = graph.Bridge(self, stream.device)
+      self.captured_handle = self.scene.handle
+      self.bridge.enqueue(stream)
+    else:
+      self.pipeline.trace(stream, self.width)
     if self.supersample:
       wp.launch(
         self.downsample,
@@ -419,19 +486,36 @@ class OptixRenderer:
         inputs=[kernel_inputs.cameras(m, d, rc), rc.exposure, parts["out"], kernel_inputs.outputs(rc)],
       )
 
+  def __del__(self):
+    if getattr(self, "bridge", None) is not None:
+      self.bridge.close()
+
 
 def render(m: Model, d: Data, rc: PbrRenderContext, seed: int = 0):
   """Renders the real-time tier with OptiX traversal (see `render.render`).
 
+  Inside CUDA graph capture this needs `rc.optix_graph_capture` (see `graph.py` and
+  `PbrRenderContext`) and a first render of `rc` outside the capture, which compiles the programs
+  and builds the acceleration structures.
+
   Raises:
-    RuntimeError: when called during CUDA stream capture. CUDA graph capture does not record
-      OptiX launches (only their parameter copy), so a captured render would be silently empty.
+    RuntimeError: when called during a capture without `rc.optix_graph_capture`, before the
+      first eager render, or where the host-function bridge is unavailable (non-Linux).
   """
   if wp.get_stream().is_capturing:
-    raise RuntimeError(
-      'traversal="optix" cannot be captured in a CUDA graph (stream capture does not record OptiX '
-      'launches); call render outside the capture or use traversal="software"'
-    )
+    if not rc.optix_graph_capture:
+      raise RuntimeError(
+        'traversal="optix" in a CUDA graph capture needs rc.optix_graph_capture = True: stream capture '
+        "cannot record OptiX launches, which then run through host nodes and a worker thread (synchronise "
+        "after launching the graph before copying to pageable host memory, see PbrRenderContext)"
+      )
+    if not graph.available():
+      raise RuntimeError('traversal="optix" can only be captured in a CUDA graph on Linux')
+    if rc._optix is None or rc._optix.nworld != d.nworld:
+      raise RuntimeError(
+        'traversal="optix": render once outside the CUDA graph capture first (it compiles the OptiX '
+        "programs and builds the acceleration structures)"
+      )
   if rc._optix is None:
     rc._optix = OptixRenderer(m, d, rc)
   elif rc._optix.nworld != d.nworld:

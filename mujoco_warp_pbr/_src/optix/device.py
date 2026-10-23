@@ -22,8 +22,9 @@ preamble that includes `<optix_device.h>`; `build_options` adds the OptiX SDK in
 
 Payload layout of a closest-hit trace (6 registers):
   p0: hit distance (float bits), p1: instance id (0xffffffff on a miss), p2: primitive index,
-  p3..p5: triangle barycentrics (b1, b2), or the world-space normal of a custom primitive, whose
-  intersection program also supplies the hit's world · ngeom + geom code (attribute 3) for p1.
+  p3..p5: triangle barycentrics (b1, b2), or the world-space normal of a curve or custom
+  primitive. For those p1 holds the hit's world · ngeom + geom code instead: set by the curve
+  closest-hit program (`set_hit`), or by a custom intersection program as attribute 3.
 An occlusion trace uses one register: 1 if anything is hit, 0 after the miss program.
 """
 
@@ -117,6 +118,16 @@ __device__ inline wp::vec3 world_ray_direction() {
   return wp::vec3(v.x, v.y, v.z);
 }
 
+// Closest-hit payload of a curve hit: distance, world · ngeom + geom, primitive, world normal.
+__device__ inline void set_hit(float t, int code, int primitive, wp::vec3 n) {
+  optixSetPayload_0(__float_as_uint(t));
+  optixSetPayload_1((unsigned int)code);
+  optixSetPayload_2((unsigned int)primitive);
+  optixSetPayload_3(__float_as_uint(n[0]));
+  optixSetPayload_4(__float_as_uint(n[1]));
+  optixSetPayload_5(__float_as_uint(n[2]));
+}
+
 // Custom-primitive hit (hit kind 0): world-space normal and world · ngeom + geom as attributes.
 __device__ inline bool report_intersection(float t, wp::vec3 n, int code) {
   return optixReportIntersection(t, 0u, __float_as_uint(n[0]), __float_as_uint(n[1]), __float_as_uint(n[2]),
@@ -165,6 +176,12 @@ if AVAILABLE:
   _B.add_builtin("mjpbr_optix_primitive_index", {}, int, native_name="mjpbr_optix::primitive_index")
   _B.add_builtin("mjpbr_optix_world_ray_origin", {}, wp.vec3, native_name="mjpbr_optix::world_ray_origin")
   _B.add_builtin("mjpbr_optix_world_ray_direction", {}, wp.vec3, native_name="mjpbr_optix::world_ray_direction")
+  _B.add_builtin(
+    "mjpbr_optix_set_hit",
+    {"t": float, "code": int, "primitive": int, "n": wp.vec3},
+    None,
+    native_name="mjpbr_optix::set_hit",
+  )
   _B.add_builtin(
     "mjpbr_optix_report_intersection",
     {"t": float, "n": wp.vec3, "code": int},

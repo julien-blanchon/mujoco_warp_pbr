@@ -15,7 +15,7 @@
 
 import dataclasses
 import enum
-from typing import Any
+from typing import Any, Optional
 
 import warp as wp
 from mujoco_warp import RenderContext
@@ -174,12 +174,19 @@ class PbrRenderContext:
       "optix" (hardware ray tracing through OptiX, see optix/)
     optix_rebuild_every: rebuild the OptiX IAS every this many frames instead of refitting it
       (0: refit only)
-    optix_max_registers: register cap of the OptiX programs (0: OptiX's default); 64 is the
-      fastest measured on Blackwell RTX (up to 20% faster than the default)
-    mesh_bvh_frame: per-mesh rotation R of the software traversal's mesh BVHs, built over
-      `R v` (None when every mesh BVH is in MuJoCo's mesh frame)               (nmesh,)
+    optix_max_registers: register cap of the OptiX programs (0: OptiX's default; None: 96 with
+      mirror reflections, whose second trace and shading site spill at 64, else 64). Measured
+      on Blackwell RTX: 64 is up to 20% faster than OptiX's default; with reflections 96 is
+      1.4x faster than 64
+    optix_graph_capture: allow rendering inside CUDA graph capture with traversal="optix"
+      (Linux). The graph runs the OptiX calls through host nodes and a worker thread
+      (optix/graph.py). After launching such a graph, synchronise (wp.synchronize(),
+      torch.cuda.synchronize(), ...) before any synchronous copy to pageable host memory (e.g.
+      array.numpy()): such a copy, issued while the graph waits for the worker, deadlocks.
+    mesh_bvh_frame: per-mesh rotation R of the mesh BVHs (software traversal) or triangle
+      GASes (OptiX), built over `R v` (None when all are in MuJoCo's mesh frame)  (nmesh,)
     trace_mesh_bvh_id: mesh BVHs of the software traversal (`base.mesh_bvh_id`, with the
-      re-framed copies where mesh_bvh_frame is not the identity)              (nmesh,)
+      re-framed copies where mesh_bvh_frame is not the identity; None with OptiX) (nmesh,)
     trace_mesh_registry: the re-framed wp.Mesh objects (keeps them alive)
     geom_xmat_trace: geom frames of ray queries, refreshed every render  (nworld, ngeom)
     _megakernel: cached specialised render kernel
@@ -252,7 +259,8 @@ class PbrRenderContext:
   hdr_data: wp.array2d[wp.vec3]
   traversal: str = "software"
   optix_rebuild_every: int = 0
-  optix_max_registers: int = 64
+  optix_max_registers: Optional[int] = None
+  optix_graph_capture: bool = False
   mesh_bvh_frame: Any = None
   trace_mesh_bvh_id: Any = None
   trace_mesh_registry: Any = None

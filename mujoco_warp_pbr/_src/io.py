@@ -59,14 +59,14 @@ def _bbox_area_sum(points: np.ndarray, faces: np.ndarray) -> float:
   return float(np.sum(e[:, 0] * e[:, 1] + e[:, 1] * e[:, 2] + e[:, 2] * e[:, 0]))
 
 
-def _mesh_bvh_frames(mjm: mujoco.MjModel, base, nworld: int, constructor: str) -> Optional[dict]:
-  """Rebuilds mesh BVHs in the authored frame where that is a much better fit (see trace.py).
+def _mesh_frames(mjm: mujoco.MjModel) -> dict:
+  """Authored-frame rotations of the meshes whose BVH they improve: {mesh_id: (R, R v, faces)}.
 
-  Returns the PbrRenderContext fields of the re-framed BVHs, or None if no mesh benefits.
+  MuJoCo's mesh frame is the principal inertia frame; R (from mesh_quat) rotates its vertices v
+  back to the authored frame. A mesh is kept when that shrinks its summed triangle bounding-box
+  area by at least _MESH_FRAME_MIN_GAIN.
   """
-  frames = np.tile(np.eye(3, dtype=np.float32), (mjm.nmesh, 1, 1))
-  ids = base.mesh_bvh_id.numpy() if mjm.nmesh else np.zeros(0, dtype=np.uint64)
-  registry = []
+  out = {}
   for mesh_id in range(mjm.nmesh):
     if np.allclose(mjm.mesh_quat[mesh_id], [1.0, 0.0, 0.0, 0.0]):
       continue
@@ -81,6 +81,28 @@ def _mesh_bvh_frames(mjm: mujoco.MjModel, base, nworld: int, constructor: str) -
     framed = points @ rot.T
     if _bbox_area_sum(points, faces) < _MESH_FRAME_MIN_GAIN * _bbox_area_sum(framed, faces):
       continue
+    out[mesh_id] = (rot, framed, faces)
+  return out
+
+
+def _mesh_bvh_frames(mjm: mujoco.MjModel, base, nworld: int, constructor: str, traversal: str) -> Optional[dict]:
+  """Mesh BVHs in the authored frame where that is a much better fit (see trace.py).
+
+  The software traversal gets re-framed Warp mesh BVHs; the OptiX backend only the rotations (it
+  builds its triangle GASes from them, see optix/accel.py). Returns the PbrRenderContext fields,
+  or None if no mesh benefits.
+  """
+  selected = _mesh_frames(mjm)
+  if not selected:
+    return None
+  frames = np.tile(np.eye(3, dtype=np.float32), (mjm.nmesh, 1, 1))
+  for mesh_id, (rot, _, _) in selected.items():
+    frames[mesh_id] = rot
+  if traversal != "software":
+    return {"mesh_bvh_frame": wp.array(frames, dtype=wp.mat33)}
+  ids = base.mesh_bvh_id.numpy()
+  registry = []
+  for mesh_id, (_, framed, faces) in selected.items():
     mesh = wp.Mesh(
       points=wp.array(framed.astype(np.float32), dtype=wp.vec3),
       indices=wp.array(faces.flatten().astype(np.int32), dtype=wp.int32),
@@ -89,9 +111,6 @@ def _mesh_bvh_frames(mjm: mujoco.MjModel, base, nworld: int, constructor: str) -
     )
     registry.append(mesh)
     ids[mesh_id] = mesh.id
-    frames[mesh_id] = rot
-  if not registry:
-    return None
   return {
     "mesh_bvh_frame": wp.array(frames, dtype=wp.mat33),
     "trace_mesh_bvh_id": wp.array(ids, dtype=wp.uint64),
@@ -201,11 +220,12 @@ def create_render_context(
       (sm_120), where it is slower; depth / segmentation-only and path-traced kernels are faster
       with MuJoCo Warp's traversal.
     mesh_bvh_constructor: Warp BVH builder for meshes ("cubql" as MuJoCo Warp, "sah", "lbvh").
-    mesh_bvh_frame: Frame the software traversal builds mesh BVHs in. "mujoco" uses MuJoCo's
-      mesh frame (the principal inertia frame) as MuJoCo Warp does. "auto" (default) rebuilds a
-      mesh's BVH in its authored frame when that shrinks its triangles' bounding boxes
-      substantially: CAD-style meshes are axis-aligned as authored, and rotated into the inertia
-      frame their long triangles get large overlapping boxes (up to ~5x slower rendering).
+    mesh_bvh_frame: Frame mesh BVHs (software traversal) and triangle GASes (OptiX) are built in.
+      "mujoco" uses MuJoCo's mesh frame (the principal inertia frame) as MuJoCo Warp does. "auto"
+      (default) rebuilds a mesh's BVH in its authored frame when that shrinks its triangles'
+      bounding boxes substantially: CAD-style meshes are axis-aligned as authored, and rotated
+      into the inertia frame their long triangles get large overlapping boxes (up to ~5x slower
+      rendering).
     tier: Tier.REALTIME (direct lighting + split-sum IBL) or Tier.PATH (path tracing).
     path_samples: Path-traced samples per pixel (random sub-pixel positions).
     max_depth: Maximum path length in bounces (path-traced tier).
@@ -219,6 +239,9 @@ def create_render_context(
       the GPU has them (needs PyOptiX and the OptiX SDK headers, see `_src/optix`); it falls back
       to "software" with a warning when unavailable or when the scene has flex, height fields or
       SDF geoms. Depth, segmentation and images match the software traversal up to rounding.
+      "auto" picks "optix" when it is available and meshes are rendered (3-7x faster than
+      software on the mesh scenes measured on RTX PRO 6000), else "software": on
+      primitive-only scenes OptiX ranged from 0.6x (mirror reflections) to 1.3x of software.
 
   Returns:
     The PBR render context.
@@ -234,8 +257,15 @@ def create_render_context(
     raise ValueError("shadow_samples must be at least 1")
   if mesh_bvh_frame not in ("auto", "mujoco"):
     raise ValueError(f'mesh_bvh_frame must be "auto" or "mujoco", got {mesh_bvh_frame!r}')
-  if traversal not in ("software", "optix"):
-    raise ValueError(f'traversal must be "software" or "optix", got {traversal!r}')
+  if traversal not in ("software", "optix", "auto"):
+    raise ValueError(f'traversal must be "software", "optix" or "auto", got {traversal!r}')
+  if traversal == "auto":
+    from mujoco_warp_pbr._src import optix as optix_backend
+
+    rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
+    has_mesh = bool(np.any(mjm.geom_type[rendered] == mujoco.mjtGeom.mjGEOM_MESH))
+    usable = has_mesh and optix_backend.unavailable_reason(mjm, enabled_geom_groups, tier) is None
+    traversal = "optix" if usable else "software"
   if traversal == "optix":
     from mujoco_warp_pbr._src import optix as optix_backend
 
@@ -273,8 +303,8 @@ def create_render_context(
       base.mesh_bvh_id = wp.array(ids, dtype=wp.uint64)
 
   frames = None
-  if traversal == "software" and mesh_bvh_frame == "auto":
-    frames = _mesh_bvh_frames(mjm, base, nworld, mesh_bvh_constructor)
+  if mesh_bvh_frame == "auto":
+    frames = _mesh_bvh_frames(mjm, base, nworld, mesh_bvh_constructor, traversal)
 
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)

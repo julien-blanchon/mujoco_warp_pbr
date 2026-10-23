@@ -23,13 +23,21 @@ instance bounds over all worlds (grown as geometry moves, see `accel.py`).
 Planes are infinite or larger than the rest of the scene, so they are not instanced: they are
 intersected analytically here with MuJoCo Warp's `ray_plane`, before or after the OptiX trace.
 Hit distances are in the units of the (unit) ray direction, as in the software traversal.
+
+Hits by geom type (see `accel.py`):
+- meshes and boxes: hardware triangle hits. A mesh hit carries its face and barycentrics; a box
+  (a scaled unit cube) gets the normal of the cube face it hit.
+- spheres and capsules: built-in linear curves. The closest-hit program re-runs MuJoCo Warp's
+  `ray_sphere` / `ray_capsule` on the hit geom (`curve_hit`), so distances and normals are the
+  software traversal's.
+- ellipsoids and cylinders: custom primitives whose intersection programs run MuJoCo Warp's
+  `ray_*` functions (`make_intersection`).
 """
 
 from typing import Tuple
 
 import warp as wp
 from mujoco_warp._src.ray import RAY_TOL_REL
-from mujoco_warp._src.ray import ray_box
 from mujoco_warp._src.ray import ray_capsule
 from mujoco_warp._src.ray import ray_cylinder
 from mujoco_warp._src.ray import ray_ellipsoid
@@ -51,14 +59,10 @@ FRAME_SPACING = 2  # distance between neighbouring cell centres
 FRAME_CENTER = 3  # cell centre
 FRAME_SIZE = 4
 
+# Geom types traced as built-in linear curves (linear swept spheres).
+CURVE_TYPES = (int(GeomType.SPHERE), int(GeomType.CAPSULE))
 # Geom types intersected by custom-primitive programs.
-PRIMITIVE_TYPES = (
-  int(GeomType.SPHERE),
-  int(GeomType.CAPSULE),
-  int(GeomType.ELLIPSOID),
-  int(GeomType.CYLINDER),
-  int(GeomType.BOX),
-)
+CUSTOM_TYPES = (int(GeomType.ELLIPSOID), int(GeomType.CYLINDER))
 # Relative padding of the custom-primitive bounds (avoids losing grazing hits to rounding).
 _BOUND_PAD = 1.0e-4
 
@@ -96,6 +100,14 @@ def primitive_world_half_extent(gtype: int, size: wp.vec3, mat: wp.mat33) -> wp.
     else:
       half[i] = wp.abs(mat[i, 0]) * size[0] + wp.abs(mat[i, 1]) * size[1] + wp.abs(mat[i, 2]) * size[2]
   return half * wp.static(1.0 + _BOUND_PAD) + wp.vec3(1.0e-6)
+
+
+@wp.func
+def cube_face_normal(face: int) -> wp.vec3:
+  """Outward normal of face `face` (triangles 2 face, 2 face + 1) of accel's unit cube."""
+  n = wp.vec3(0.0)
+  n[face // 2] = wp.where(face % 2 == 0, 1.0, -1.0)
+  return n
 
 
 @wp.func
@@ -139,13 +151,19 @@ def _plane_vector(plane_ids: Tuple[int, ...]):
 
 
 def make_trace(
-  plane_ids: Tuple[int, ...], has_mesh: bool, has_instances: bool, cull_backfaces: bool, closest_ray_flags: int
+  plane_ids: Tuple[int, ...],
+  has_mesh: bool,
+  has_box: bool,
+  has_instances: bool,
+  cull_backfaces: bool,
+  closest_ray_flags: int,
 ) -> Tuple[wp.Function, wp.Function]:
   """Returns (trace_closest, trace_any) with the signatures of `trace.make_trace`.
 
   Args:
     plane_ids: enabled plane geoms, intersected analytically.
     has_mesh: whether any instance is a mesh (triangle GAS).
+    has_box: whether any instance is a box (unit-cube triangle GAS).
     has_instances: whether the IAS holds any instance.
     cull_backfaces: drop hits whose normal faces away from the ray (as MuJoCo Warp).
     closest_ray_flags: OptiX ray flags of closest-hit rays (back-face culling of triangles).
@@ -172,7 +190,7 @@ def make_trace(
         r = wp.mjpbr_optix_trace_closest(geo.rt_handle, origin + offset, direction, span[0], span[1], flags)
         if r.instance >= 0:
           gi = r.instance - worldid * geo.geom_type.shape[0]
-          # Custom primitives report a world-space normal; meshes the face normal of the mesh frame.
+          # Curves and custom primitives report a world-space normal; triangles their barycentrics.
           n = wp.vec3(r.a, r.b, r.c)
           if wp.static(has_mesh):
             if geo.geom_type[gi] == int(GeomType.MESH):
@@ -182,7 +200,11 @@ def make_trace(
               # OptiX (b1, b2) weight vertices 1 and 2; MuJoCo Warp's (u, v) vertices 0 and 1.
               hit.bary_u = 1.0 - r.a - r.b
               hit.bary_v = r.a
+              # The face normal of the mesh frame (the GAS may be built in another frame).
               n = geo.geom_xmat[worldid, gi] @ wp.mesh_eval_face_normal(geo.mesh_bvh_id[mesh_id], r.primitive)
+          if wp.static(has_box):
+            if geo.geom_type[gi] == int(GeomType.BOX):
+              n = geo.geom_xmat[worldid, gi] @ cube_face_normal(r.primitive // 2)
           hit.geom_id = gi
           hit.dist = r.t
           hit.normal = wp.normalize(n)
@@ -245,6 +267,42 @@ def make_trace(
   return trace_closest, trace_any
 
 
+@wp.func
+def curve_hit(geo: Geometry, curve_geom: wp.array[int]) -> Tuple[float, wp.vec3, int]:
+  """Closest hit on curve segment `world · ncurve + k` (sphere or capsule geom curve_geom[k]).
+
+  Re-runs MuJoCo Warp's `ray_sphere` / `ray_capsule` on the world ray; if that disagrees with
+  OptiX's hit (it should not), keeps OptiX's distance with the analytic normal there. Returns
+  (distance, world normal, world · ngeom + geom).
+  """
+  index = wp.mjpbr_optix_primitive_index()
+  ncurve = curve_geom.shape[0]
+  worldid = index // ncurve
+  gi = curve_geom[index - worldid * ncurve]
+  pnt = wp.mjpbr_optix_world_ray_origin()
+  vec = wp.mjpbr_optix_world_ray_direction()
+  t = wp.mjpbr_optix_ray_tmax()
+  pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
+  mat = geo.geom_xmat[worldid, gi]
+  size = geo.geom_size[worldid % geo.geom_size.shape[0], gi]
+  capsule = geo.geom_type[gi] == int(GeomType.CAPSULE)
+  d = float(-1.0)
+  n = wp.vec3(0.0)
+  if capsule:
+    d, n = ray_capsule(pos, mat, size, pnt, vec)
+  else:
+    d, n = ray_sphere(pos, size[0] * size[0], pnt, vec)
+  if d < 0.0 or wp.abs(d - t) > 1.0e-3 * wp.max(t, size[0]):
+    axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+    p = pnt + t * vec
+    s = float(0.0)
+    if capsule:
+      s = wp.clamp(wp.dot(p - pos, axis), -size[1], size[1])
+    d = t
+    n = wp.normalize(p - (pos + s * axis))
+  return d, n, worldid * geo.geom_type.shape[0] + gi
+
+
 def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
   """Intersection of the world ray with custom primitive `world · nprim + k` of the primitive GAS.
 
@@ -267,16 +325,10 @@ def make_intersection(gtype: int, cull_backfaces: bool) -> wp.Function:
     pos = geo.geom_xpos[worldid, gi] + world_offset(geo.rt_frame, geo.rt_grid, worldid)
     mat = geo.geom_xmat[worldid, gi]
     size = geo.geom_size[worldid % geo.geom_size.shape[0], gi]
-    if wp.static(gtype == int(GeomType.SPHERE)):
-      d, n = ray_sphere(pos, size[0] * size[0], pnt, vec)
-    elif wp.static(gtype == int(GeomType.CAPSULE)):
-      d, n = ray_capsule(pos, mat, size, pnt, vec)
-    elif wp.static(gtype == int(GeomType.ELLIPSOID)):
+    if wp.static(gtype == int(GeomType.ELLIPSOID)):
       d, n = ray_ellipsoid(pos, mat, size, pnt, vec)
-    elif wp.static(gtype == int(GeomType.CYLINDER)):
-      d, n = ray_cylinder(pos, mat, size, pnt, vec)
     else:
-      d, _all, n = ray_box(pos, mat, size, pnt, vec)
+      d, n = ray_cylinder(pos, mat, size, pnt, vec)
     if wp.static(cull_backfaces):
       # Backface cull: drop exit-face hits, as MuJoCo Warp.
       if d >= 0.0 and wp.dot(vec, n) > 0.0:

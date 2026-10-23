@@ -329,7 +329,8 @@ def main():
     wp.synchronize()
     once = time.perf_counter() - start
     args.iters = int(max(1, min(args.iters, round(args.time_budget / max(once, 1e-6)))))
-  # OptiX launches and RTX steps cannot be captured in CUDA graphs: time them eagerly.
+  # RTX steps cannot be captured in CUDA graphs. OptiX renders can only through host nodes
+  # (rc.optix_graph_capture), which is no faster for batches than eager timing: time both eagerly.
   eager = (args.renderer == "pbr" and rc.traversal == "optix") or args.renderer == "newton_rtx_tiled"
   if sequential:
     times = time_loop(step, args.iters, args.repeats)
