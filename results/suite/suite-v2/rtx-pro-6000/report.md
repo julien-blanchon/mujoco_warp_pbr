@@ -11,70 +11,80 @@ NVIDIA RTX PRO 6000 Blackwell Server Edition, 580.178.04, 97887 MiB, 12.0. Linux
 
 Commit `f137f228d868`.
 
+PBR real-time, path-traced and OptiX rows, and Newton RTX (tiled), re-measured at commit `5da78fdef50c` (mesh BVHs in the authored frame, OptiX follow-up); the PBR through Newton rows predate the BVH change.
+
 ### Single scene: 1 world, 256²
 
-| scene | PBR real-time | PBR real-time (OptiX) | PBR path (16 spp) | PBR via Newton | Newton | Newton RTX | MuJoCo Warp | MuJoCo GL | Mitsuba (16 spp) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| material_grid | 38.1k | 3.3k | 519 | 21.8k | **67.7k** | 82 | 43.4k | 3.3k | 22 |
-| primitives | 28.3k | 3.3k | 402 | 15.4k | **46.2k** | 80 | 38.4k | 2.8k | 70 |
-| damaged_helmet | **5.0k** | 3.5k | 82 | 4.9k | 3.3k | 91 | 3.7k | 4.4k | 218 |
-| a_beautiful_game | 2.8k | 3.5k | 60 |  |  | 83 | **3.7k** | 2.4k | 18 |
-| anymal_c | 2.4k | **3.6k** | 54 | 2.0k | 2.5k | 76 | 2.8k | 2.4k | 18 |
-| franka_showroom | 1.2k | **3.5k** | 31 | 1.4k | 1.8k | 72 | 1.7k | 2.3k | 16 |
-| isaac_franka_cabinet | 1.8k | 3.1k | 29 | 1.7k | 1.3k | 77 | 2.4k | **3.7k** | 18 |
-| isaac_seattle_lab_table | 474 | 3.6k | 5 | 415 | 3.9k | 91 | 371 | **5.4k** | 229 |
+| scene | PBR real-time | PBR real-time (OptiX) | PBR path (16 spp) | PBR via Newton | Newton | Newton RTX | Newton RTX (tiled) | MuJoCo Warp | MuJoCo GL | Mitsuba (16 spp) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| material_grid | 38.2k | 3.2k | 523 | 21.8k | **67.7k** | 82 | 113 | 43.4k | 3.3k | 22 |
+| primitives | 28.1k | 3.0k | 401 | 15.4k | **46.2k** | 80 | 113 | 38.4k | 2.8k | 70 |
+| damaged_helmet | **5.0k** | 3.5k | 83 | 4.9k | 3.3k | 91 | 115 | 3.7k | 4.4k | 218 |
+| a_beautiful_game | 2.8k | 3.4k | 60 |  |  | 83 |  | **3.7k** | 2.4k | 18 |
+| anymal_c | 2.4k | **3.5k** | 56 | 2.0k | 2.5k | 76 | 113 | 2.8k | 2.4k | 18 |
+| franka_showroom | 1.7k | **2.9k** | 53 | 1.4k | 1.8k | 72 | 113 | 1.7k | 2.3k | 16 |
+| isaac_franka_cabinet | 1.9k | 3.4k | 44 | 1.7k | 1.3k | 77 | 118 | 2.4k | **3.7k** | 18 |
+| isaac_seattle_lab_table | **6.4k** | 3.4k | 97 | 415 | 3.9k | 91 | 118 | 371 | 5.4k | 229 |
 
 ### Batch: 4096 worlds, 64²
 
-| scene | PBR real-time | PBR real-time (OptiX) | PBR path (16 spp) | PBR via Newton | Newton | MuJoCo Warp |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| material_grid | 1.85M | 1.86M | 12.5k | 1.30M | 1.95M | **2.54M** |
-| primitives | 1.21M | 653.0k | 10.7k | 1.09M | 1.88M | **2.08M** |
-| damaged_helmet | 309.6k | **1.64M** | 2.1k | 304.9k | 168.2k | 111.6k |
-| a_beautiful_game | 244.2k | **1.33M** | 2.0k | 238.4k | 134.2k | 146.8k |
-| anymal_c | 176.1k | **931.6k** | 1.9k | 148.4k | 176.5k | 81.6k |
-| franka_showroom | 194.6k | **729.8k** | 2.8k | 169.8k | 284.8k | 77.9k |
-| isaac_franka_cabinet | 262.9k | **1.37M** | 2.1k | 259.5k | 192.4k | 102.3k |
-| isaac_seattle_lab_table | 55.0k | **1.66M** | 393 | 56.7k | 288.3k | 11.3k |
+| scene | PBR real-time | PBR real-time (OptiX) | PBR path (16 spp) | PBR via Newton | Newton | Newton RTX (tiled) | MuJoCo Warp |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| material_grid | 1.87M | 2.39M | 12.6k | 1.30M | 1.95M | 73.1k | **2.54M** |
+| primitives | 1.22M | 1.05M | 10.8k | 1.09M | 1.88M | 72.8k | **2.08M** |
+| damaged_helmet | 311.7k | **1.61M** | 2.2k | 304.9k | 168.2k | 70.5k | 111.6k |
+| a_beautiful_game | 245.9k | **1.33M** | 2.0k | 238.4k | 134.2k | 64.9k | 146.8k |
+| anymal_c | 180.3k | **926.1k** | 1.9k | 148.4k | 176.5k | 72.6k | 81.6k |
+| franka_showroom | 226.1k | **795.0k** | 3.2k | 169.8k | 284.8k | 72.2k | 77.9k |
+| isaac_franka_cabinet | 274.4k | **1.86M** | 2.2k | 259.5k | 192.4k | 72.3k | 102.3k |
+| isaac_seattle_lab_table | 477.4k | **1.57M** | 4.1k | 56.7k | 288.3k | 71.5k | 11.3k |
 
 ### Batch: 1024 worlds, 128²
 
-| scene | PBR real-time | PBR real-time (OptiX) | PBR path (16 spp) | PBR via Newton | Newton | Newton RTX | MuJoCo Warp | MuJoCo GL | Mitsuba (16 spp) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| material_grid | 583.2k | 619.6k | 3.6k | 401.9k | 607.6k | 94 | **697.4k** | 5.7k | 23 |
-| primitives | 340.2k | 190.3k | 2.9k | 318.9k | **552.0k** | 93 | 547.0k | 4.3k | 69 |
-| damaged_helmet | 101.0k | **475.5k** | 638 | 98.5k | 55.1k | 97 | 29.4k | 8.9k | 245 |
-| a_beautiful_game | 77.6k | **392.0k** | 556 |  |  |  | 37.3k | 2.8k | 18 |
-| anymal_c | 61.3k | **315.2k** | 541 | 51.1k | 57.7k | 83 | 23.2k | 3.2k | 18 |
-| franka_showroom | 62.5k | **263.5k** | 853 | 54.6k | 87.0k | 82 | 21.3k | 2.8k | 16 |
-| isaac_franka_cabinet | 87.6k | **387.9k** | 584 | 86.9k | 56.7k | 90 | 26.5k | 4.8k | 17 |
-| isaac_seattle_lab_table | 18.0k | **482.0k** | 119 | 18.3k | 95.4k | 96 | 3.6k | 7.1k | 233 |
+| scene | PBR real-time | PBR real-time (OptiX) | PBR path (16 spp) | PBR via Newton | Newton | Newton RTX | Newton RTX (tiled) | MuJoCo Warp | MuJoCo GL | Mitsuba (16 spp) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| material_grid | 588.1k | **745.0k** | 3.6k | 401.9k | 607.6k | 94 | 22.1k | 697.4k | 5.7k | 23 |
+| primitives | 342.1k | 307.0k | 2.9k | 318.9k | **552.0k** | 93 | 20.7k | 547.0k | 4.3k | 69 |
+| damaged_helmet | 101.4k | **470.8k** | 644 | 98.5k | 55.1k | 97 | 19.6k | 29.4k | 8.9k | 245 |
+| a_beautiful_game | 78.1k | **387.5k** | 560 |  |  |  |  | 37.3k | 2.8k | 18 |
+| anymal_c | 62.9k | **314.2k** | 554 | 51.1k | 57.7k | 83 | 20.0k | 23.2k | 3.2k | 18 |
+| franka_showroom | 71.0k | **277.6k** | 983 | 54.6k | 87.0k | 82 | 20.2k | 21.3k | 2.8k | 16 |
+| isaac_franka_cabinet | 91.5k | **539.5k** | 628 | 86.9k | 56.7k | 90 | 20.1k | 26.5k | 4.8k | 17 |
+| isaac_seattle_lab_table | 148.4k | **475.7k** | 1.2k | 18.3k | 95.4k | 96 | 19.3k | 3.6k | 7.1k | 233 |
 
 ### Gallery
 
 MuJoCo GL | MuJoCo Warp | Newton | Newton RTX | PBR real-time | PBR path-traced | Mitsuba (reference).
 
-**a_beautiful_game**
+**a_beautiful_game** ([orbit video](gallery/a_beautiful_game.mp4))
 
 ![a_beautiful_game](gallery/a_beautiful_game.png)
 
-**anymal_c**
+**anymal_c** ([orbit video](gallery/anymal_c.mp4))
 
 ![anymal_c](gallery/anymal_c.png)
 
-**damaged_helmet**
+**damaged_helmet** ([orbit video](gallery/damaged_helmet.mp4))
 
 ![damaged_helmet](gallery/damaged_helmet.png)
 
-**franka_showroom**
+**franka_showroom** ([orbit video](gallery/franka_showroom.mp4))
 
 ![franka_showroom](gallery/franka_showroom.png)
 
-**material_grid**
+**isaac_franka_cabinet** ([orbit video](gallery/isaac_franka_cabinet.mp4))
+
+![isaac_franka_cabinet](gallery/isaac_franka_cabinet.png)
+
+**isaac_seattle_lab_table** ([orbit video](gallery/isaac_seattle_lab_table.mp4))
+
+![isaac_seattle_lab_table](gallery/isaac_seattle_lab_table.png)
+
+**material_grid** ([orbit video](gallery/material_grid.mp4))
 
 ![material_grid](gallery/material_grid.png)
 
-**primitives**
+**primitives** ([orbit video](gallery/primitives.mp4))
 
 ![primitives](gallery/primitives.png)
 

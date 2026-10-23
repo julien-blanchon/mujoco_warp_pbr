@@ -15,5 +15,6 @@
   "gpus": [
     "NVIDIA RTX PRO 6000 Blackwell Server Edition, 580.178.04, 97887 MiB, 12.0"
   ],
-  "commit": "f137f228d868057062432bec26c31dbec4b07e0f"
+  "commit": "f137f228d868057062432bec26c31dbec4b07e0f",
+  "note": "PBR real-time, path-traced and OptiX rows, and Newton RTX (tiled), re-measured at commit `5da78fdef50c` (mesh BVHs in the authored frame, OptiX follow-up); the PBR through Newton rows predate the BVH change."
 }

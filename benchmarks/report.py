@@ -130,6 +130,8 @@ def render(runs: list[Path], base: Path | None = None, gallery_exclude: tuple[st
     out += [f"{'; '.join(system.get('gpus', []))}. {system.get('platform', '')}. {packages}.", ""]
     if system.get("commit"):
       out += [f"Commit `{system['commit'][:12]}`.", ""]
+    if system.get("note"):
+      out += [system["note"], ""]
     for context, title in CONTEXT_NAMES.items():
       table = _table(results, context)
       if table:

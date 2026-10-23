@@ -15,5 +15,6 @@
   "gpus": [
     "NVIDIA A100-SXM4-80GB, 580.178.04, 81920 MiB, 8.0"
   ],
-  "commit": "e7ce6c3a774d849efab15fd6e582d7d50b4af194"
+  "commit": "e7ce6c3a774d849efab15fd6e582d7d50b4af194",
+  "note": "PBR real-time and path-traced rows re-measured at commit `5da78fdef50c` (mesh BVHs in the authored frame); the PBR through Newton rows predate it."
 }
