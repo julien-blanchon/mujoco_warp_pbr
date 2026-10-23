@@ -1,25 +1,36 @@
-# Builds mujoco-warp-pbr and newton-pbr and publishes them to PyPI when a v* tag is pushed.
+# Builds mujoco-warp-pbr and newton-pbr and publishes them to PyPI when a v* tag is pushed, or by
+# hand for an existing tag (workflow_dispatch, e.g. to finish a partly failed release).
 # Uses PyPI trusted publishing: no token is stored; each project trusts this workflow and the
-# `pypi` environment (https://docs.pypi.org/trusted-publishers/).
+# `pypi` environment (https://docs.pypi.org/trusted-publishers/). Each package is published by its
+# own job: one token exchange can only turn one pending publisher into a project.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (files already on PyPI are skipped)"
+        required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: astral-sh/setup-uv@v6
       - name: Check that the tag matches both package versions
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${{ inputs.tag || github.ref_name }}"
+          tag="${tag#v}"
           for f in pyproject.toml newton-pbr/pyproject.toml; do
             grep -q "^version = \"$tag\"$" "$f" || { echo "$f does not have version $tag"; exit 1; }
           done
-      - run: uv build --all-packages --out-dir dist
+      - run: uv build --package mujoco-warp-pbr --out-dir dist/mujoco-warp-pbr
+      - run: uv build --package newton-pbr --out-dir dist/newton-pbr
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -31,9 +42,16 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+    strategy:
+      max-parallel: 1
+      matrix:
+        package: [mujoco-warp-pbr, newton-pbr]
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/${{ matrix.package }}/
+          skip-existing: true
