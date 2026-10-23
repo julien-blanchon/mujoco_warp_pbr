@@ -387,11 +387,18 @@ dependencies = [
     { name = "newton" },
 ]
 
+[package.optional-dependencies]
+typing = [
+    { name = "mujoco-warp-pbr", extra = ["typing"] },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "mujoco-warp-pbr", editable = "." },
+    { name = "mujoco-warp-pbr", extras = ["typing"], marker = "extra == 'typing'", editable = "." },
     { name = "newton", specifier = ">=1.7" },
 ]
+provides-extras = ["typing"]
 
 [[package]]
 name = "nodeenv"

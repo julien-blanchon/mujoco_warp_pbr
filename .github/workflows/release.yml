@@ -1,0 +1,39 @@
+# Builds mujoco-warp-pbr and newton-pbr and publishes them to PyPI when a v* tag is pushed.
+# Uses PyPI trusted publishing: no token is stored; each project trusts this workflow and the
+# `pypi` environment (https://docs.pypi.org/trusted-publishers/).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check that the tag matches both package versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          for f in pyproject.toml newton-pbr/pyproject.toml; do
+            grep -q "^version = \"$tag\"$" "$f" || { echo "$f does not have version $tag"; exit 1; }
+          done
+      - run: uv build --all-packages --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

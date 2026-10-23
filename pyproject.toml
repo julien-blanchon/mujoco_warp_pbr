@@ -9,6 +9,16 @@ description = "Batched physically based renderer for MuJoCo Warp"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
 authors = [{name = "Julien Blanchon"}]
+keywords = ["mujoco", "mujoco-warp", "warp", "rendering", "pbr", "ray-tracing", "robotics", "simulation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Rendering",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12"
 dependencies = [
     "mujoco>=3.13.0",
@@ -17,6 +27,10 @@ dependencies = [
     "numpy",
     "warp-lang>=1.15",
 ]
+
+[project.urls]
+Repository = "https://github.com/julien-blanchon/mujoco_warp_pbr"
+Issues = "https://github.com/julien-blanchon/mujoco_warp_pbr/issues"
 
 [project.optional-dependencies]
 # Type-checking-only stubs (shape-aware Warp and NumPy, MuJoCo): `pip install mujoco-warp-pbr[typing]`.
@@ -140,3 +154,6 @@ bad-index = "ignore"
 unsupported-operation = "ignore"
 not-iterable = "ignore"
 bad-unpacking = "ignore"
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

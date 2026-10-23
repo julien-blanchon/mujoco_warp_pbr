@@ -9,14 +9,35 @@ description = "Physically based camera sensor for Newton, rendered by mujoco_war
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
 authors = [{name = "Julien Blanchon"}]
+keywords = ["newton", "mujoco-warp-pbr", "warp", "rendering", "pbr", "robotics", "simulation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Rendering",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12"
 dependencies = [
     "mujoco-warp-pbr",
     "newton>=1.7",
 ]
 
+[project.optional-dependencies]
+# Shape-aware type stubs for type checking only (see mujoco-warp-pbr[typing]).
+typing = ["mujoco-warp-pbr[typing]"]
+
+[project.urls]
+Repository = "https://github.com/julien-blanchon/mujoco_warp_pbr"
+Issues = "https://github.com/julien-blanchon/mujoco_warp_pbr/issues"
+
 [tool.setuptools.packages.find]
 include = ["newton_pbr*"]
 
 [tool.uv.sources]
 mujoco-warp-pbr = {workspace = true}
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

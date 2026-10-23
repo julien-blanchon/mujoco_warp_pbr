@@ -1,0 +1,21 @@
+# Lint, type check and the tests that run without a GPU (Warp's CPU device).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-packages --all-extras
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyrefly check
+      - run: uv run pytest -q tests/test_benchmarks.py tests/test_cpu.py tests/test_gltf_to_mjcf.py
