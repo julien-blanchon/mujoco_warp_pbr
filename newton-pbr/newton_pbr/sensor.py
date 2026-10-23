@@ -15,6 +15,8 @@
 
 """PBR camera sensor for Newton, mirroring `newton.sensors.SensorCamera.update`."""
 
+from typing import Any, Optional
+
 import mujoco
 import mujoco_warp as mjw
 import newton
@@ -22,11 +24,14 @@ import numpy as np
 import warp as wp
 
 import mujoco_warp_pbr as mjpbr
+from newton_pbr._scene import Headlight
 from newton_pbr._scene import Light
 from newton_pbr._scene import build_scene
 from newton_pbr._scene import default_lights
 
 _OBJ_GEOM = wp.constant(int(mujoco.mjtObj.mjOBJ_GEOM))
+# create_render_context options the sensor sets itself.
+_RESERVED_OPTIONS = ("nworld", "cam_res", "render_rgb", "render_hdr")
 
 
 @wp.kernel(enable_backward=False)
@@ -37,17 +42,15 @@ def _sync_poses(
   geom_shape: wp.array2d[wp.int32],
   offset_pos: wp.array[wp.vec3],
   offset_quat: wp.array[wp.quat],
-  world_of_view: wp.array[wp.int32],
   camera_transforms: wp.array[wp.transformf],
   geom_xpos: wp.array2d[wp.vec3],
   geom_xmat: wp.array2d[wp.mat33],
   cam_xpos: wp.array2d[wp.vec3],
   cam_xmat: wp.array2d[wp.mat33],
 ):
-  """World-space geom poses of view v's world from Newton's body transforms; camera pose."""
+  """World-space geom poses of world (view) v from Newton's body transforms; camera pose."""
   view, geom = wp.tid()
-  world = world_of_view[view]
-  shape = geom_shape[world, geom]
+  shape = geom_shape[view, geom]
   x = shape_transform[shape]
   body = shape_body[shape]
   if body >= 0:
@@ -70,7 +73,6 @@ def _copy_outputs(
   seg_in: wp.array2d[wp.vec2i],
   hdr_in: wp.array2d[wp.vec3],
   geom_shape: wp.array2d[wp.int32],
-  world_of_view: wp.array[wp.int32],
   ray_scale: wp.array2d[float],
   want_color: bool,
   want_depth: bool,
@@ -104,7 +106,7 @@ def _copy_outputs(
     s = seg_in[view, pixel]
     index = wp.uint32(0xFFFFFFFF)
     if s[0] >= 0 and s[1] == _OBJ_GEOM:
-      index = wp.uint32(geom_shape[world_of_view[view], s[0]])
+      index = wp.uint32(geom_shape[view, s[0]])
     shape_index[view, y, x] = index
   if want_hdr:
     hdr[view, y, x] = hdr_in[view, pixel]
@@ -140,10 +142,10 @@ class SensorPbrCamera:
     width: int,
     height: int,
     fovy: float = 60.0,
-    lights: list[Light] | None = None,
-    envmap=None,
-    headlight=None,
-    **render_options,
+    lights: Optional[list[Light]] = None,
+    envmap: Any = None,
+    headlight: Optional[Headlight] = None,
+    **render_options: Any,
   ):
     """Builds the MuJoCo appearance model and the render context.
 
@@ -156,8 +158,16 @@ class SensorPbrCamera:
       envmap: Equirectangular HDR environment (path or array) lighting the scene.
       headlight: None (off) or (ambient, diffuse, specular) RGB of MuJoCo's camera headlight.
       **render_options: Further `mujoco_warp_pbr.create_render_context` options (e.g. `tier`,
-        `samples_per_pixel`, `light_model`, `envmap_intensity`).
+        `samples_per_pixel`, `light_model`, `envmap_intensity`); not nworld, cam_res, render_rgb or
+        render_hdr, which the sensor sets.
+
+    Raises:
+      TypeError: for a render option the sensor sets itself.
+      ValueError: when the worlds do not have the same visible shapes.
     """
+    reserved = [name for name in _RESERVED_OPTIONS if name in render_options]
+    if reserved:
+      raise TypeError(f"SensorPbrCamera sets {reserved} itself; remove them from the render options")
     self.model = model
     self.width = width
     self.height = height
@@ -184,7 +194,10 @@ class SensorPbrCamera:
     # MuJoCo quaternions are (w, x, y, z), Warp's (x, y, z, w).
     q = self.scene.geom_offset_quat[:, [1, 2, 3, 0]].astype(np.float32)
     self._offset_quat = wp.array(q, dtype=wp.quat, device=device)
-    self._world_of_view = wp.array(np.arange(self.nworld, dtype=np.int32), dtype=wp.int32, device=device)
+    # Placeholders for the outputs not requested in update.
+    self._dummy_u = wp.empty((1, 1, 1), dtype=wp.uint32, device=device)
+    self._dummy_f = wp.empty((1, 1, 1), dtype=float, device=device)
+    self._dummy_v = wp.empty((1, 1, 1), dtype=wp.vec3, device=device)
     # Ray distance / forward depth per pixel (pinhole through pixel centres).
     tan = np.tan(np.radians(fovy) / 2.0)
     ys = (1.0 - 2.0 * (np.arange(height) + 0.5) / height) * tan
@@ -219,10 +232,24 @@ class SensorPbrCamera:
     shape_index_image: wp.array3d[wp.uint32] | None = None,
     hdr_color_image: wp.array3d[wp.vec3f] | None = None,
     seed: int = 0,
-  ):
-    """Renders view i = world i from camera_transforms[i] (shape (world_count,))."""
+  ) -> None:
+    """Renders view i = world i from camera_transforms[i] (shape (world_count,)).
+
+    Raises:
+      ValueError: for camera transforms or output images of the wrong shape, dtype or device.
+    """
     if camera_transforms.shape[0] != self.nworld:
       raise ValueError(f"camera_transforms must have one transform per world ({self.nworld})")
+    images = {
+      "color_image": (color_image, wp.uint32),
+      "depth_image": (depth_image, wp.float32),
+      "forward_depth_image": (forward_depth_image, wp.float32),
+      "shape_index_image": (shape_index_image, wp.uint32),
+      "hdr_color_image": (hdr_color_image, wp.vec3f),
+    }
+    for name, (image, dtype) in images.items():
+      if image is not None:
+        self._check_image(name, image, dtype)
     ngeom = self.mjm.ngeom
     wp.launch(
       _sync_poses,
@@ -234,18 +261,16 @@ class SensorPbrCamera:
         self._geom_shape,
         self._offset_pos,
         self._offset_quat,
-        self._world_of_view,
         camera_transforms,
       ],
       outputs=[self.d.geom_xpos, self.d.geom_xmat, self.d.cam_xpos, self.d.cam_xmat],
     )
-    mjw.refit_bvh(self.m, self.d, self.rc.base)
+    if self.rc.traversal != "optix":  # OptiX updates its own structures in render
+      mjw.refit_bvh(self.m, self.d, self.rc.base)
     mjpbr.render(self.m, self.d, self.rc, seed=seed)
 
     base = self.rc.base
-    dummy_u = wp.empty((1, 1, 1), dtype=wp.uint32, device=self.model.device)
-    dummy_f = wp.empty((1, 1, 1), dtype=float, device=self.model.device)
-    dummy_v = wp.empty((1, 1, 1), dtype=wp.vec3, device=self.model.device)
+    dummy_u, dummy_f, dummy_v = self._dummy_u, self._dummy_f, self._dummy_v
     wp.launch(
       _copy_outputs,
       dim=(self.nworld, self.width * self.height),
@@ -256,7 +281,6 @@ class SensorPbrCamera:
         base.seg_data,
         self.rc.hdr_data,
         self._geom_shape,
-        self._world_of_view,
         self._ray_scale,
         color_image is not None,
         depth_image is not None,
@@ -272,3 +296,11 @@ class SensorPbrCamera:
         hdr_color_image if hdr_color_image is not None else dummy_v,
       ],
     )
+
+  def _check_image(self, name: str, image: Any, dtype: Any):
+    shape = (self.nworld, self.height, self.width)
+    if tuple(image.shape) != shape or image.dtype != dtype or image.device != self.model.device:
+      raise ValueError(
+        f"{name} must be a {wp.types.type_repr(dtype)} array of shape {shape} on {self.model.device} "
+        f"(allocate_image_*), got {wp.types.type_repr(image.dtype)} {tuple(image.shape)} on {image.device}"
+      )

@@ -15,6 +15,8 @@
 
 """SensorPbrCamera against Newton's own SensorCamera on the same scene."""
 
+from typing import Any
+
 import newton
 import numpy as np
 import pytest
@@ -112,3 +114,53 @@ def test_shape_colours(rendered):
   r, g, b = rgba[index == box][:, :3].mean(axis=0)
   # The red box (sRGB 0.9, 0.1, 0.1) stays red after lighting and tone mapping.
   assert r > 2.0 * g and r > 2.0 * b
+
+
+def test_light_type_is_validated():
+  with pytest.raises(ValueError, match="Light.type"):
+    kind: Any = "area"
+    newton_pbr.Light(kind)
+
+
+def test_reserved_render_options_raise():
+  model, _, _ = _scene(nworld=1)
+  with pytest.raises(TypeError, match="render_rgb"):
+    newton_pbr.SensorPbrCamera(model, width=8, height=8, render_rgb=False)
+
+
+def test_output_images_are_validated(rendered):
+  model, state, cams, *_ = rendered
+  camera = newton_pbr.SensorPbrCamera(model, width=16, height=16)
+  wrong: Any = wp.zeros((cams.shape[0], 8, 16), dtype=wp.uint32, device=model.device)
+  with pytest.raises(ValueError, match="color_image"):
+    camera.update(state, cams, color_image=wrong)
+  with pytest.raises(ValueError, match="depth_image"):
+    index: Any = camera.allocate_image_shape_index()
+    camera.update(state, cams, depth_image=index)
+
+
+def test_worlds_must_match():
+  def world(radius: float) -> newton.ModelBuilder:
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=radius)
+    return builder
+
+  scene = newton.ModelBuilder()
+  scene.add_world(world(0.2))
+  scene.add_world(world(0.3))
+  with pytest.raises(ValueError, match="same visible shapes"):
+    newton_pbr.SensorPbrCamera(scene.finalize(), width=8, height=8)
+
+
+def test_shared_meshes_become_one_mujoco_mesh():
+  verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+  faces = np.array([0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3], dtype=np.int32)
+  mesh = newton.Mesh(verts, faces)
+  builder = newton.ModelBuilder()
+  for x in (0.0, 1.5):
+    builder.add_shape_mesh(-1, mesh=mesh, xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()))
+  builder.add_shape_mesh(-1, mesh=mesh, scale=(2.0, 2.0, 2.0))
+  scene = newton_pbr.build_scene(builder.finalize(), None, 45.0)
+  assert scene.mjm.ngeom == 3
+  assert scene.mjm.nmesh == 2  # one per (mesh, scale)
