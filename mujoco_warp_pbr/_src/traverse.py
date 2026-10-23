@@ -28,7 +28,7 @@ MuJoCo Warp's traversal. Flex geometry is not supported here (callers fall back 
 """
 
 import ctypes
-from typing import Tuple
+from typing import Callable, Tuple
 
 import warp as wp
 from mujoco_warp._src.ray import RAY_TOL_ABS
@@ -122,7 +122,7 @@ def _ray_aabb(origin: wp.vec3, rcp_dir: wp.vec3, lower: wp.vec3, upper: wp.vec3,
   return -1.0
 
 
-def make_ordered_cast(geom_ray_types: Tuple[int, ...], first_hit: bool) -> wp.Function:
+def make_ordered_cast(geom_ray_types: Tuple[int, ...], first_hit: bool) -> Callable:
   """Drop-in replacement of MuJoCo Warp's `_make_cast_ray` (same arguments and results)."""
   types = set(geom_ray_types)
 

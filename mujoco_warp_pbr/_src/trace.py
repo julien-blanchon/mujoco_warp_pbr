@@ -29,7 +29,7 @@ holds `geom_xmat @ R^T` for those mesh geoms, so distances, faces, barycentrics 
 are unchanged.
 """
 
-from typing import Tuple
+from typing import Callable, Tuple
 
 import warp as wp
 from mujoco_warp import Data
@@ -39,8 +39,16 @@ from mujoco_warp._src.render import _make_cast_ray
 from mujoco_warp._src.types import GeomType
 
 from mujoco_warp_pbr._src import traverse
+from mujoco_warp_pbr._src.types import PbrRenderContext
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+# Origin offset of secondary rays along the surface normal (as in MuJoCo Warp).
+RAY_OFFSET = 1.0e-4
+# Shadow rays towards a point on a light stop this short of it.
+SHADOW_GAP = 1.0e-3
+# Length of shadow rays towards directional lights and the environment.
+UNBOUNDED_SHADOW_DIST = 1.0e8
 
 
 @wp.struct
@@ -157,38 +165,37 @@ def _mesh_trace_frames(
   geom_xmat_trace_out[worldid, gi] = mat
 
 
-def software_geometry(m: Model, d: Data, rc) -> Geometry:
-  """`geometry` for the software traversal: mesh queries use the re-framed mesh BVHs of `rc`."""
+def software_geometry(m: Model, d: Data, rc: PbrRenderContext) -> Geometry:
+  """`geometry` for the software traversal: mesh queries use the re-framed mesh BVHs of `rc`.
+
+  The re-framed geom frames are refreshed by `update_trace_frames`, once per frame.
+  """
   geo = geometry(m, d, rc.base)
-  if rc.mesh_bvh_frame is not None:
+  if rc.geom_xmat_trace is not None and rc.trace_mesh_bvh_id is not None:
+    geo.geom_xmat_trace = rc.geom_xmat_trace
+    geo.mesh_bvh_id = rc.trace_mesh_bvh_id
+  return geo
+
+
+def update_trace_frames(m: Model, d: Data, rc: PbrRenderContext) -> None:
+  """Writes `rc.geom_xmat_trace` from the current geom frames (re-framed mesh BVHs only)."""
+  if rc.mesh_bvh_frame is not None and rc.geom_xmat_trace is not None:
     wp.launch(
       _mesh_trace_frames,
       dim=(d.nworld, m.ngeom),
       inputs=[m.geom_type, m.geom_dataid, d.geom_xmat, rc.mesh_bvh_frame],
       outputs=[rc.geom_xmat_trace],
     )
-    geo.geom_xmat_trace = rc.geom_xmat_trace
-    geo.mesh_bvh_id = rc.trace_mesh_bvh_id
-  return geo
 
 
-def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: bool = False) -> Tuple[wp.Function, wp.Function]:
-  """Returns (trace_closest, trace_any) specialised on the geom types present.
-
-  ordered selects the nearest-first scene traversal of `traverse.py` (kernels inlining it need
-  `traverse.BUILD_OPTIONS`); otherwise MuJoCo Warp's traversal is used.
-
-  trace_closest(geo, worldid, origin, direction, max_dist) -> Hit
-  trace_any(geo, worldid, origin, direction, max_dist) -> bool, True if anything is hit before
-  max_dist.
-  """
-  make_cast = traverse.make_ordered_cast if ordered else _make_cast_ray
-  cast_closest = make_cast(geom_ray_types, first_hit=False)
-  cast_any = make_cast(geom_ray_types, first_hit=True)
+def _make_query(cast: Callable) -> Callable:
+  """Wraps a MuJoCo Warp cast function: query(geo, worldid, origin, direction, max_dist, cull)."""
 
   @wp.func
-  def trace_closest(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> Hit:
-    geom_id, dist, normal, bary_u, bary_v, face_id, mesh_id = cast_closest(
+  def query(
+    geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float, cull_backfaces: bool
+  ) -> Tuple[int, float, wp.vec3, float, float, int, int]:
+    return cast(
       geo.geom_type,
       geo.geom_dataid,
       geo.geom_matid,
@@ -217,7 +224,30 @@ def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: b
       origin,
       direction,
       max_dist,
-      wp.static(cull_backfaces),
+      cull_backfaces,
+    )
+
+  return query
+
+
+def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: bool = False) -> Tuple[Callable, Callable]:
+  """Returns (trace_closest, trace_any) specialised on the geom types present.
+
+  ordered selects the nearest-first scene traversal of `traverse.py` (kernels inlining it need
+  `traverse.BUILD_OPTIONS`); otherwise MuJoCo Warp's traversal is used.
+
+  trace_closest(geo, worldid, origin, direction, max_dist) -> Hit
+  trace_any(geo, worldid, origin, direction, max_dist) -> bool, True if anything is hit before
+  max_dist.
+  """
+  make_cast = traverse.make_ordered_cast if ordered else _make_cast_ray
+  cast_closest = _make_query(make_cast(geom_ray_types, first_hit=False))
+  cast_any = _make_query(make_cast(geom_ray_types, first_hit=True))
+
+  @wp.func
+  def trace_closest(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> Hit:
+    geom_id, dist, normal, bary_u, bary_v, face_id, mesh_id = cast_closest(
+      geo, worldid, origin, direction, max_dist, wp.static(cull_backfaces)
     )
     hit = Hit()
     hit.geom_id = geom_id
@@ -232,35 +262,7 @@ def make_trace(geom_ray_types: Tuple[int, ...], cull_backfaces: bool, ordered: b
   @wp.func
   def trace_any(geo: Geometry, worldid: int, origin: wp.vec3, direction: wp.vec3, max_dist: float) -> bool:
     geom_id, _dist, _normal, _u, _v, _face, _mesh = cast_any(
-      geo.geom_type,
-      geo.geom_dataid,
-      geo.geom_matid,
-      geo.geom_size,
-      geo.geom_rgba,
-      geo.flex_vertadr,
-      geo.flex_edge,
-      geo.flex_radius,
-      geo.mat_rgba,
-      geo.geom_xpos,
-      geo.geom_xmat_trace,
-      geo.flexvert_xpos,
-      geo.bvh_id,
-      geo.group_root[worldid],
-      worldid,
-      geo.bvh_ngeom,
-      geo.bvh_nflexgeom,
-      geo.enabled_geom_ids,
-      geo.mesh_bvh_id,
-      geo.hfield_bvh_id,
-      geo.flex_rgba,
-      geo.flex_geom_flexid,
-      geo.flex_geom_edgeid,
-      geo.flex_bvh_id,
-      geo.flex_group_root,
-      origin,
-      direction,
-      max_dist,
-      wp.static(cull_backfaces),
+      geo, worldid, origin, direction, max_dist, wp.static(cull_backfaces)
     )
     return geom_id != -1
 

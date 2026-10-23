@@ -21,7 +21,7 @@ mapping along the surface. The derivatives give both the normal-map tangent fram
 texture LOD of a ray cone (Akenine-Möller et al. 2019).
 """
 
-from typing import Tuple
+from typing import Callable, Tuple
 
 import mujoco
 import numpy as np
@@ -34,14 +34,14 @@ from mujoco_warp._src.render import _texture_plane
 from mujoco_warp._src.render import _texture_sphere_ellipsoid
 from mujoco_warp._src.types import GeomType
 
+from mujoco_warp_pbr._src.color import srgb_to_linear
+
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 ROLE = mujoco.mjtTextureRole
 # Roles whose texels are colours (decoded from sRGB unless the texture says linear).
 _COLOR_ROLES = [int(ROLE.mjTEXROLE_RGB), int(ROLE.mjTEXROLE_RGBA), int(ROLE.mjTEXROLE_EMISSIVE)]
-_SRGB_TABLE = np.where(
-  np.arange(256) / 255.0 <= 0.04045, np.arange(256) / 255.0 / 12.92, ((np.arange(256) / 255.0 + 0.055) / 1.055) ** 2.4
-).astype(np.float16)
+_SRGB_TABLE = srgb_to_linear(np.arange(256) / 255.0).astype(np.float16)
 
 
 def is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
@@ -54,7 +54,7 @@ def is_srgb(mjm: mujoco.MjModel, tex_id: int) -> bool:
   return bool(np.isin(tex_id, mjm.mat_texid[:, _COLOR_ROLES]))
 
 
-def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> Tuple[list, np.ndarray]:
+def upload_textures(mjm: mujoco.MjModel, used: np.ndarray) -> Tuple[list[wp.Texture2D], np.ndarray]:
   """Creates mipmapped GPU textures for the 2D textures in `used`.
 
   sRGB textures become linear float16 (so filtering and mipmaps are linear); data textures stay
@@ -102,7 +102,7 @@ def orthonormal_basis(n: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   return wp.vec3(1.0 + sign * n[0] * n[0] * a, sign * b, -sign * n[0]), wp.vec3(b, sign + n[1] * n[1] * a, -n[1])
 
 
-def make_primitive_uv(geom_types: Tuple[int, ...]) -> wp.Function:
+def make_primitive_uv(geom_types: Tuple[int, ...]) -> Callable:
   """Build MuJoCo's analytic UV mapping for the primitive types present.
 
   Returns (uv, repeat, offset); the texture coordinate is uv ⊙ repeat + offset. Keeping uv

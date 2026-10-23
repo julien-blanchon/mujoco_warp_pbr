@@ -23,6 +23,8 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp_pbr._src.color import luminance
+
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # Filament clamps perceptual roughness on desktop so that α² stays representable.
@@ -53,13 +55,6 @@ def f_schlick(f0: wp.vec3, f90: float, voh: float) -> wp.vec3:
   x2 = x * x
   fc = x2 * x2 * x
   return f0 * (1.0 - fc) + wp.vec3(f90 * fc)
-
-
-@wp.func
-def f_schlick_scalar(f0: float, f90: float, voh: float) -> float:
-  x = 1.0 - voh
-  x2 = x * x
-  return f0 + (f90 - f0) * (x2 * x2 * x)
 
 
 @wp.func
@@ -180,9 +175,8 @@ def pdf_bsdf(alpha: float, p_spec: float, v: wp.vec3, l: wp.vec3) -> float:
 @wp.func
 def specular_probability(diffuse_color: wp.vec3, spec_albedo: wp.vec3) -> float:
   """Probability of sampling the specular lobe, from the lobes' albedo luminance."""
-  lum = wp.vec3(0.2126, 0.7152, 0.0722)
-  ws = wp.dot(spec_albedo, lum)
-  wd = wp.dot(diffuse_color, lum)
+  ws = luminance(spec_albedo)
+  wd = luminance(diffuse_color)
   if wd <= 0.0:
     return 1.0
   return wp.clamp(ws / wp.max(ws + wd, 1.0e-6), 0.1, 0.9)

@@ -13,8 +13,12 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
+import enum
+import math
+import os
 import warnings
-from typing import Optional, Sequence
+from typing import Optional, Sequence, TypeVar, Union
 
 import mujoco
 import mujoco_warp as mjw
@@ -27,6 +31,7 @@ from mujoco_warp_pbr._src import envmap as envmap_lib
 from mujoco_warp_pbr._src import ibl
 from mujoco_warp_pbr._src import lights
 from mujoco_warp_pbr._src import material
+from mujoco_warp_pbr._src import pathtrace
 from mujoco_warp_pbr._src import texture
 from mujoco_warp_pbr._src import traverse
 from mujoco_warp_pbr._src.types import LightModel
@@ -38,6 +43,43 @@ from mujoco_warp_pbr._src.types import UnsetMaterial
 
 # Filament's default camera: f/16, 1/125 s, ISO 100.
 DEFAULT_EV100 = 14.96578428466209
+# Register cap of the render kernels when max_registers is None (tuned on Hopper).
+DEFAULT_MAX_REGISTERS = 96
+# Threads per block for primitive-only scenes when block_dim is None (Ampere / Hopper).
+PRIMITIVE_BLOCK_DIM = 256
+# First compute capability of Blackwell RTX GPUs, whose tuned defaults differ.
+_BLACKWELL_RTX_ARCH = 120
+# Re-frame a mesh BVH when its summed triangle bounding-box area shrinks by at least this factor.
+_MESH_FRAME_MIN_GAIN = 1.25
+
+_TRAVERSALS = ("software", "optix", "auto")
+_MESH_BVH_FRAMES = ("auto", "mujoco")
+_MESH_BVH_CONSTRUCTORS = ("cubql", "sah", "lbvh")
+_MATERIAL_KEYS = ("metallic", "roughness")
+
+EnvmapItem = Union[str, os.PathLike, np.ndarray]
+_Enum = TypeVar("_Enum", bound=enum.IntEnum)
+
+
+def _enum(cls: type[_Enum], value: int, name: str) -> _Enum:
+  try:
+    return cls(value)
+  except ValueError:
+    options = ", ".join(f"{cls.__name__}.{e.name}" for e in cls)
+    raise ValueError(f"{name} must be one of {options}, got {value!r}") from None
+
+
+def _check_at_least(name: str, value: int, low: int):
+  if value < low:
+    raise ValueError(f"{name} must be at least {low}, got {value}")
+
+
+def _check_default_material(default_material: Optional[dict]):
+  for key, value in (default_material or {}).items():
+    if key not in _MATERIAL_KEYS:
+      raise ValueError(f"default_material keys must be among {_MATERIAL_KEYS}, got {key!r}")
+    if not 0.0 <= value <= 1.0:
+      raise ValueError(f"default_material[{key!r}] must be in [0, 1], got {value}")
 
 
 def _warn_unsupported(mjm: mujoco.MjModel):
@@ -48,8 +90,24 @@ def _warn_unsupported(mjm: mujoco.MjModel):
     warnings.warn(f"image lights are not supported and are ignored: {image_lights.tolist()}", stacklevel=3)
 
 
-# Re-frame a mesh BVH when its summed triangle bounding-box area shrinks by at least this factor.
-_MESH_FRAME_MIN_GAIN = 1.25
+def _select_traversal(
+  mjm: mujoco.MjModel, enabled_geom_groups: Sequence[int], tier: Tier, traversal: str, rendered: np.ndarray
+) -> str:
+  """Resolves traversal="auto" and falls back from "optix" when it cannot render the model."""
+  if traversal == "software":
+    return traversal
+  from mujoco_warp_pbr._src import optix as optix_backend
+
+  if traversal == "auto":
+    has_mesh = bool(np.any(mjm.geom_type[rendered] == mujoco.mjtGeom.mjGEOM_MESH))
+    if not has_mesh:
+      return "software"
+    return "optix" if optix_backend.unavailable_reason(mjm, enabled_geom_groups, tier) is None else "software"
+  reason = optix_backend.unavailable_reason(mjm, enabled_geom_groups, tier)
+  if reason is not None:
+    warnings.warn(f'traversal="optix" falls back to "software": {reason}', stacklevel=3)
+    return "software"
+  return traversal
 
 
 def _bbox_area_sum(points: np.ndarray, faces: np.ndarray) -> float:
@@ -59,7 +117,7 @@ def _bbox_area_sum(points: np.ndarray, faces: np.ndarray) -> float:
   return float(np.sum(e[:, 0] * e[:, 1] + e[:, 1] * e[:, 2] + e[:, 2] * e[:, 0]))
 
 
-def _mesh_frames(mjm: mujoco.MjModel) -> dict:
+def _mesh_frames(mjm: mujoco.MjModel) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
   """Authored-frame rotations of the meshes whose BVH they improve: {mesh_id: (R, R v, faces)}.
 
   MuJoCo's mesh frame is the principal inertia frame; R (from mesh_quat) rotates its vertices v
@@ -85,22 +143,38 @@ def _mesh_frames(mjm: mujoco.MjModel) -> dict:
   return out
 
 
-def _mesh_bvh_frames(mjm: mujoco.MjModel, base, nworld: int, constructor: str, traversal: str) -> Optional[dict]:
-  """Mesh BVHs in the authored frame where that is a much better fit (see trace.py).
+def _rebuild_mesh_bvhs(mjm: mujoco.MjModel, base: mjw.RenderContext, constructor: str, skip: set[int]):
+  """Rebuilds the mesh BVHs of `base` (built with cuBQL by MuJoCo Warp) with another builder.
+
+  The replaced BVHs are dropped from `base.mesh_registry`. Meshes in `skip` keep theirs: they are
+  traced through re-framed copies (see `_mesh_bvh_frames`).
+  """
+  ids = base.mesh_bvh_id.numpy().copy()  # numpy() is a view of CPU arrays
+  for mesh_id in range(mjm.nmesh):
+    if mesh_id in skip:
+      continue
+    mesh, _ = mjw_bvh.build_mesh_bvh(mjm, mesh_id, constructor=constructor)
+    base.mesh_registry.pop(int(ids[mesh_id]), None)
+    base.mesh_registry[mesh.id] = mesh
+    ids[mesh_id] = mesh.id
+  if mjm.nmesh:
+    base.mesh_bvh_id = wp.array(ids, dtype=wp.uint64)
+
+
+def _mesh_bvh_frames(
+  mjm: mujoco.MjModel, base: mjw.RenderContext, nworld: int, selected: dict, constructor: str, traversal: str
+) -> dict:
+  """PbrRenderContext fields of the meshes traced in their authored frame (see trace.py).
 
   The software traversal gets re-framed Warp mesh BVHs; the OptiX backend only the rotations (it
-  builds its triangle GASes from them, see optix/accel.py). Returns the PbrRenderContext fields,
-  or None if no mesh benefits.
+  builds its triangle GASes from them, see optix/accel.py).
   """
-  selected = _mesh_frames(mjm)
-  if not selected:
-    return None
   frames = np.tile(np.eye(3, dtype=np.float32), (mjm.nmesh, 1, 1))
   for mesh_id, (rot, _, _) in selected.items():
     frames[mesh_id] = rot
   if traversal != "software":
     return {"mesh_bvh_frame": wp.array(frames, dtype=wp.mat33)}
-  ids = base.mesh_bvh_id.numpy()
+  ids = base.mesh_bvh_id.numpy().copy()  # numpy() is a view of CPU arrays
   registry = []
   for mesh_id, (_, framed, faces) in selected.items():
     mesh = wp.Mesh(
@@ -119,6 +193,119 @@ def _mesh_bvh_frames(mjm: mujoco.MjModel, base, nworld: int, constructor: str, t
   }
 
 
+@dataclasses.dataclass
+class _Lighting:
+  exposure: float
+  light_intensity: np.ndarray
+  # Headlight illuminance times exposure (display-relative, see PbrRenderContext).
+  headlight_intensity: float
+  ambient: np.ndarray
+
+
+def _resolve_lighting(mjm: mujoco.MjModel, light_model: LightModel, ev100: float) -> _Lighting:
+  physical = light_model == LightModel.PHYSICAL
+  exposure = color.exposure_from_ev100(ev100) if physical else 1.0
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+
+  # The kernel scales the light's diffuse colour by this intensity. Authored intensities carry
+  # the brightness, so the colour is normalised; unset ones keep MuJoCo's colour brightness.
+  light_intensity = np.array(mjm.light_intensity, dtype=np.float32)
+  for i in range(mjm.nlight):
+    if light_intensity[i] > 0.0:
+      light_intensity[i] /= max(float(np.max(mjm.light_diffuse[i])), 1e-6)
+    else:
+      light_intensity[i] = lights.fallback_intensity(mjm, mjd, i, exposure)
+
+  # Constant ambient radiance until an environment is supplied: in the physical model the
+  # headlight ambient is display-relative (scaled by 1 / exposure); the MuJoCo model also adds
+  # each light's ambient colour.
+  ambient = np.zeros(3, dtype=np.float32)
+  if mjm.vis.headlight.active:
+    ambient += mjm.vis.headlight.ambient
+  if physical:
+    ambient /= exposure
+  else:
+    ambient += np.sum(mjm.light_ambient[mjm.light_active.astype(bool)], axis=0)
+  return _Lighting(exposure, light_intensity, math.pi, ambient)
+
+
+def _envmap_images(envmap: Union[EnvmapItem, Sequence[EnvmapItem], None]) -> list[np.ndarray]:
+  if envmap is None:
+    return []
+  items = envmap if isinstance(envmap, (list, tuple)) else [envmap]
+  images = []
+  for i, item in enumerate(items):
+    if isinstance(item, (str, bytes, os.PathLike)):
+      images.append(envmap_lib.load_hdr(os.fsdecode(item)))
+      continue
+    image = np.asarray(item)
+    if image.ndim != 3 or image.shape[2] not in (3, 4) or image.shape[0] < 1 or image.shape[1] < 1:
+      raise ValueError(f"envmap[{i}] must be a path or a (height, width, 3) radiance array, got shape {image.shape}")
+    images.append(image)
+  return images
+
+
+def _build_environment(
+  mjm: mujoco.MjModel, envmap: Union[EnvmapItem, Sequence[EnvmapItem], None], use_skybox: bool, physical: bool
+) -> tuple[envmap_lib.Environments, bool, bool]:
+  """Environment maps: explicit ones, else the MJCF skybox, else constant ambient.
+
+  Returns (environments, whether they light the scene, whether there is any map).
+  """
+  images = _envmap_images(envmap)
+  skybox_only = False
+  if not images and use_skybox:
+    sky = envmap_lib.skybox_image(mjm)
+    if sky is not None:
+      images.append(sky)
+      # MuJoCo's GL lights never come from the skybox: there it is background only.
+      skybox_only = not physical
+  if not images:
+    return envmap_lib.empty_environments(), False, False
+  # Looked up at call time: benchmarks share built environments between contexts by patching it.
+  return envmap_lib.build_environments(images), not skybox_only, True
+
+
+def _surface_flags(
+  mjm: mujoco.MjModel, rendered: np.ndarray, rendered_mats: np.ndarray, features: material.SurfaceFeatures, reflections: bool
+) -> tuple[bool, bool]:
+  """(has_transparency, has_reflection) of the rendered geoms."""
+  alpha = material.effective_geom_rgba(mjm)[rendered, 3]
+  has_transparency = bool(np.any((alpha > 0.0) & (alpha < 1.0))) or features.alpha_map
+  has_transparency = has_transparency or bool(mjm.nflex and np.any(mjm.flex_rgba[:, 3] < 1.0))
+  has_reflection = reflections and bool(np.any(mjm.mat_reflectance[rendered_mats] > 0.0))
+  return has_transparency, has_reflection
+
+
+def _tuning_defaults(
+  base: mjw.RenderContext,
+  tier: Tier,
+  block_dim: Optional[int],
+  max_registers: Optional[int],
+  ordered_traversal: Optional[bool],
+) -> tuple[Optional[int], int, bool]:
+  """Measured defaults of block_dim, max_registers and ordered_traversal (results/hf/tune_*.jsonl).
+
+  On Ampere / Hopper, primitive-only scenes run fastest with 256-thread blocks and the ordered
+  traversal; on Blackwell RTX (sm_120) with 64-thread blocks and MuJoCo Warp's traversal (both
+  ~25% faster there).
+  """
+  mesh_like = {int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_SDF), int(mujoco.mjtGeom.mjGEOM_HFIELD)}
+  has_meshes = bool(mesh_like & set(base.geom_ray_types)) or base.bvh_nflexgeom > 0
+  device = wp.get_device()
+  blackwell_rtx = device.is_cuda and device.arch >= _BLACKWELL_RTX_ARCH
+  if block_dim is None and not (has_meshes or blackwell_rtx):
+    block_dim = PRIMITIVE_BLOCK_DIM
+  if max_registers is None:
+    max_registers = DEFAULT_MAX_REGISTERS
+  if ordered_traversal is None:
+    ordered_traversal = tier == Tier.REALTIME and bool(base.render_rgb.numpy().any())
+    ordered_traversal = ordered_traversal and (has_meshes or not blackwell_rtx)
+  ordered_traversal = ordered_traversal and traverse.AVAILABLE and base.bvh_nflexgeom == 0
+  return block_dim, max_registers, ordered_traversal
+
+
 def create_render_context(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -134,29 +321,29 @@ def create_render_context(
   shadow_light_fraction: float = 0.0,
   enable_backface_culling: bool = True,
   enable_vertex_normals: bool = True,
-  light_model: int = LightModel.PHYSICAL,
-  tone_mapper: int = ToneMapper.PBR_NEUTRAL,
+  light_model: LightModel | int = LightModel.PHYSICAL,
+  tone_mapper: ToneMapper | int = ToneMapper.PBR_NEUTRAL,
   ev100: float = DEFAULT_EV100,
-  unset_material: int = UnsetMaterial.GLTF,
-  default_material: Optional[dict] = None,
+  unset_material: UnsetMaterial | int = UnsetMaterial.GLTF,
+  default_material: Optional[dict[str, float]] = None,
   use_textures: bool = True,
   samples_per_pixel: int = 1,
   specular_aa: bool = True,
   shadow_samples: int = 1,
   max_layers: int = 4,
   enable_reflections: bool = True,
-  envmap=None,
+  envmap: Union[EnvmapItem, Sequence[EnvmapItem], None] = None,
   envmap_intensity: float | None = None,
   envmap_rotation: float = 0.0,
   envmap_background: bool = True,
   use_skybox: bool = True,
-  render_order: int = RenderOrder.TILED,
+  render_order: RenderOrder | int = RenderOrder.TILED,
   block_dim: int | None = None,
   max_registers: int | None = None,
   mesh_bvh_constructor: str = "cubql",
   mesh_bvh_frame: str = "auto",
   ordered_traversal: bool | None = None,
-  tier: int = Tier.REALTIME,
+  tier: Tier | int = Tier.REALTIME,
   path_samples: int = 64,
   max_depth: int = 4,
   rr_depth: int = 3,
@@ -165,10 +352,12 @@ def create_render_context(
   render_hdr: bool = False,
   traversal: str = "software",
 ) -> PbrRenderContext:
-  """Creates a PBR render context on device.
+  """Creates a PBR render context on the current Warp device.
 
   Camera selection, resolutions, geom groups and the rgb / depth / segmentation switches
-  follow `mujoco_warp.create_render_context`.
+  follow `mujoco_warp.create_render_context`. Every array is allocated on Warp's current device:
+  create the context (and the MuJoCo Warp model and data) inside `with wp.ScopedDevice(device):`
+  to render on another device, e.g. "cpu" or "cuda:1".
 
   Args:
     mjm: The model on host.
@@ -182,14 +371,15 @@ def create_render_context(
     background_color: Display (sRGB) colour of pixels that hit nothing.
     use_fast_math: Compile the render kernel with fast math.
     use_shadows: Trace shadow rays for lights with castshadow.
-    shadow_light_fraction: Fraction of direct light reaching occluded points.
+    shadow_light_fraction: Fraction of direct light reaching occluded points, in [0, 1].
     enable_backface_culling: Drop hits whose normal faces away from the ray (ray starts inside).
     enable_vertex_normals: Shade meshes with interpolated vertex normals.
     light_model: LightModel.PHYSICAL or LightModel.MUJOCO.
     tone_mapper: ToneMapper applied before sRGB encoding.
     ev100: Camera exposure value for the physical light model.
     unset_material: UnsetMaterial policy for metallic / roughness left unset (-1).
-    default_material: Optional {"metallic": .., "roughness": ..} applied to unset fields only.
+    default_material: Optional {"metallic": .., "roughness": ..} (values in [0, 1]) applied to
+      unset fields only.
     use_textures: Sample material textures (all roles).
     samples_per_pixel: Stratified sub-pixel samples per axis; N gives N×N rays per pixel.
     specular_aa: Widen roughness by the normal variance across the pixel footprint.
@@ -245,34 +435,50 @@ def create_render_context(
 
   Returns:
     The PBR render context.
+
+  Raises:
+    ValueError: for invalid arguments, or a model with nothing to render.
   """
-  _warn_unsupported(mjm)
-  if not np.any(np.isin(mjm.geom_group, list(enabled_geom_groups))) and not mjm.nflex:
-    raise ValueError("the model has no geoms in the enabled geom groups to render")
+  light_model = _enum(LightModel, light_model, "light_model")
+  tone_mapper = _enum(ToneMapper, tone_mapper, "tone_mapper")
+  unset_material = _enum(UnsetMaterial, unset_material, "unset_material")
+  render_order = _enum(RenderOrder, render_order, "render_order")
+  tier = _enum(Tier, tier, "tier")
+  for name, value in (
+    ("samples_per_pixel", samples_per_pixel),
+    ("shadow_samples", shadow_samples),
+    ("max_layers", max_layers),
+    ("path_samples", path_samples),
+  ):
+    _check_at_least(name, value, 1)
+  for name, value in (("max_depth", max_depth), ("rr_depth", rr_depth), ("denoise_iterations", denoise_iterations)):
+    _check_at_least(name, value, 0)
+  if tier == Tier.PATH and max_depth + 4 * max_layers >= pathtrace.MAX_PATH_VERTICES:
+    raise ValueError(
+      f"max_depth + 4 * max_layers must be below {pathtrace.MAX_PATH_VERTICES} for the path tracer's random "
+      f"number layout, got {max_depth} + 4 * {max_layers}"
+    )
+  if not 0.0 <= shadow_light_fraction <= 1.0:
+    raise ValueError(f"shadow_light_fraction must be in [0, 1], got {shadow_light_fraction}")
+  _check_default_material(default_material)
   if denoise and tier != Tier.PATH:
     raise ValueError("denoise applies to the path-traced tier (Tier.PATH)")
-  if samples_per_pixel < 1:
-    raise ValueError("samples_per_pixel must be at least 1")
-  if shadow_samples < 1:
-    raise ValueError("shadow_samples must be at least 1")
-  if mesh_bvh_frame not in ("auto", "mujoco"):
+  if mesh_bvh_frame not in _MESH_BVH_FRAMES:
     raise ValueError(f'mesh_bvh_frame must be "auto" or "mujoco", got {mesh_bvh_frame!r}')
-  if traversal not in ("software", "optix", "auto"):
+  if mesh_bvh_constructor not in _MESH_BVH_CONSTRUCTORS:
+    raise ValueError(f"mesh_bvh_constructor must be one of {_MESH_BVH_CONSTRUCTORS}, got {mesh_bvh_constructor!r}")
+  if traversal not in _TRAVERSALS:
     raise ValueError(f'traversal must be "software", "optix" or "auto", got {traversal!r}')
-  if traversal == "auto":
-    from mujoco_warp_pbr._src import optix as optix_backend
+  if block_dim is not None:
+    _check_at_least("block_dim", block_dim, 1)
+  if max_registers is not None:
+    _check_at_least("max_registers", max_registers, 0)
 
-    rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
-    has_mesh = bool(np.any(mjm.geom_type[rendered] == mujoco.mjtGeom.mjGEOM_MESH))
-    usable = has_mesh and optix_backend.unavailable_reason(mjm, enabled_geom_groups, tier) is None
-    traversal = "optix" if usable else "software"
-  if traversal == "optix":
-    from mujoco_warp_pbr._src import optix as optix_backend
-
-    reason = optix_backend.unavailable_reason(mjm, enabled_geom_groups, tier)
-    if reason is not None:
-      warnings.warn(f'traversal="optix" falls back to "software": {reason}', stacklevel=2)
-      traversal = "software"
+  _warn_unsupported(mjm)
+  rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
+  if not np.any(rendered) and not mjm.nflex:
+    raise ValueError("the model has no geoms in the enabled geom groups to render")
+  traversal = _select_traversal(mjm, enabled_geom_groups, tier, traversal, rendered)
   base = mjw.create_render_context(
     mjm,
     nworld=nworld,
@@ -292,51 +498,17 @@ def create_render_context(
     enable_vertex_normals=enable_vertex_normals,
   )
 
+  reframed = _mesh_frames(mjm) if mesh_bvh_frame == "auto" else {}
   if mesh_bvh_constructor != "cubql":
-    # MuJoCo Warp builds mesh BVHs with cuBQL; rebuild them with the requested builder.
-    ids = []
-    for mesh_id in range(mjm.nmesh):
-      mesh, _ = mjw_bvh.build_mesh_bvh(mjm, mesh_id, constructor=mesh_bvh_constructor)
-      base.mesh_registry[mesh.id] = mesh
-      ids.append(mesh.id)
-    if ids:
-      base.mesh_bvh_id = wp.array(ids, dtype=wp.uint64)
-
-  frames = None
-  if mesh_bvh_frame == "auto":
-    frames = _mesh_bvh_frames(mjm, base, nworld, mesh_bvh_constructor, traversal)
-
-  mjd = mujoco.MjData(mjm)
-  mujoco.mj_forward(mjm, mjd)
+    # Meshes re-framed for the software traversal are traced through their re-framed BVH only.
+    _rebuild_mesh_bvhs(mjm, base, mesh_bvh_constructor, set(reframed) if traversal == "software" else set())
+  frames = _mesh_bvh_frames(mjm, base, nworld, reframed, mesh_bvh_constructor, traversal) if reframed else {}
 
   physical = light_model == LightModel.PHYSICAL
-  exposure = color.exposure_from_ev100(ev100) if physical else 1.0
-
-  # The kernel scales the light's diffuse colour by this intensity. Authored intensities carry
-  # the brightness, so the colour is normalised; unset ones keep MuJoCo's colour brightness.
-  light_intensity = np.array(mjm.light_intensity, dtype=np.float32)
-  for i in range(mjm.nlight):
-    if light_intensity[i] > 0.0:
-      light_intensity[i] /= max(float(np.max(mjm.light_diffuse[i])), 1e-6)
-    else:
-      light_intensity[i] = lights.fallback_intensity(mjm, mjd, i, exposure)
-  headlight_intensity = np.pi / exposure
-
-  # Constant ambient radiance until an environment is supplied: in the physical model the
-  # headlight ambient is display-relative (scaled by 1 / exposure); the MuJoCo model also adds
-  # each light's ambient colour.
-  ambient = np.zeros(3, dtype=np.float32)
-  if mjm.vis.headlight.active:
-    ambient += mjm.vis.headlight.ambient
-  if physical:
-    ambient /= exposure
-  else:
-    ambient += np.sum(mjm.light_ambient[mjm.light_active.astype(bool)], axis=0)
-
+  lighting = _resolve_lighting(mjm, light_model, ev100)
   metallic, roughness, reflectance = material.resolve_geom_materials(mjm, unset_material, default_material)
 
-  # Only materials of rendered geoms decide which features the kernel is specialised on.
-  rendered = np.isin(mjm.geom_group, list(enabled_geom_groups))
+  # Only materials of rendered geoms decide which features the kernel uses.
   rendered_mats = np.unique(mjm.geom_matid[rendered & (mjm.geom_matid >= 0)])
   # The path tracer resolves highlights and texture detail by sampling: no footprint filtering.
   features = material.SurfaceFeatures(mjm, use_textures, specular_aa and tier == Tier.REALTIME, rendered_mats)
@@ -345,100 +517,53 @@ def create_render_context(
     ids = mjm.mat_texid[rendered_mats].ravel()
     used_tex[ids[ids >= 0]] = True
   textures, tex_size = texture.upload_textures(mjm, used_tex)
+  has_transparency, has_reflection = _surface_flags(mjm, rendered, rendered_mats, features, enable_reflections)
+  background_linear = color.srgb_to_linear(background_color[:3])
 
-  geom_alpha = np.where(
-    (mjm.geom_matid >= 0) & np.all(np.isclose(mjm.geom_rgba, [0.5, 0.5, 0.5, 1.0]), axis=1),
-    mjm.mat_rgba[np.maximum(mjm.geom_matid, 0), 3] if mjm.nmat else 1.0,
-    mjm.geom_rgba[:, 3],
-  )
-  has_transparency = bool(np.any((geom_alpha[rendered] > 0.0) & (geom_alpha[rendered] < 1.0))) or features.alpha_map
-  has_transparency = has_transparency or bool(mjm.nflex and np.any(mjm.flex_rgba[:, 3] < 1.0))
-  has_reflection = enable_reflections and bool(np.any(mjm.mat_reflectance[rendered_mats] > 0.0))
-  background_linear = np.where(
-    np.asarray(background_color[:3]) <= 0.04045,
-    np.asarray(background_color[:3]) / 12.92,
-    ((np.asarray(background_color[:3]) + 0.055) / 1.055) ** 2.4,
-  )
-
-  # Environment: explicit maps, else the MJCF skybox, else constant ambient.
-  images = []
-  if envmap is not None:
-    for item in envmap if isinstance(envmap, (list, tuple)) else [envmap]:
-      images.append(envmap_lib.load_hdr(item) if isinstance(item, (str, bytes)) or hasattr(item, "__fspath__") else item)
-  skybox_only = False
-  if not images and use_skybox:
-    sky = envmap_lib.skybox_image(mjm)
-    if sky is not None:
-      images.append(sky)
-      # MuJoCo's GL lights never come from the skybox: there it is background only.
-      skybox_only = not physical
-  has_env = bool(images) and not skybox_only
-  if images:
-    env = envmap_lib.build_environments(images)
-  else:
-    radiance = wp.Texture2D(np.zeros((1, 1, 4), np.float16))
-    prefiltered = wp.Texture3D(np.zeros((1, 1, 1, 4), np.float16))
-    env = {
-      "maps": [radiance, prefiltered],
-      "radiance": wp.array([radiance], dtype=wp.Texture2D),
-      "prefiltered": wp.array([prefiltered], dtype=wp.Texture3D),
-      "sh": wp.zeros((1, 9), dtype=wp.vec3),
-      "width": 1.0,
-      "prob": wp.ones((1, 1, 1), dtype=float),
-      "marginal": wp.array([[0.0, 1.0]], dtype=float),
-      "conditional": wp.array([[[0.0, 1.0]]], dtype=float),
-    }
+  env, has_env, any_env = _build_environment(mjm, envmap, use_skybox, physical)
   if envmap_intensity is None:
-    envmap_intensity = 1.0 / exposure
+    envmap_intensity = 1.0 / lighting.exposure
   if has_env and physical:
     # The environment replaces MuJoCo's ambient terms.
-    ambient[:] = 0.0
+    lighting.ambient[:] = 0.0
 
-  mesh_like = {int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_SDF), int(mujoco.mjtGeom.mjGEOM_HFIELD)}
-  has_meshes = bool(mesh_like & set(base.geom_ray_types)) or base.bvh_nflexgeom > 0
-  # Measured defaults (results/hf/tune_*.jsonl): on Ampere / Hopper, primitive-only scenes run
-  # fastest with 256-thread blocks and the ordered traversal; on Blackwell RTX (sm_120) with
-  # 64-thread blocks and MuJoCo Warp's traversal (both ~25% faster there).
-  blackwell_rtx = wp.get_device().arch >= 120
-  if block_dim is None:
-    block_dim = None if has_meshes or blackwell_rtx else 256
+  block_dim, max_registers, ordered_traversal = _tuning_defaults(base, tier, block_dim, max_registers, ordered_traversal)
 
-  if max_registers is None:
-    max_registers = 96
-  if ordered_traversal is None:
-    ordered_traversal = tier == Tier.REALTIME and bool(base.render_rgb.numpy().any())
-    ordered_traversal = ordered_traversal and (has_meshes or not blackwell_rtx)
-  ordered_traversal = ordered_traversal and traverse.AVAILABLE and base.bvh_nflexgeom == 0
+  npixel = base.rgb_data.shape[1]
+  aov_pixels = npixel if denoise else 1
 
-  ri = base.rgb_data.shape[1]
+  def per_world(values: np.ndarray) -> wp.array:
+    """A (1, n) batched float array: shared by every world until replaced."""
+    return wp.array(np.asarray(values, dtype=np.float32).reshape(1, -1), dtype=float)
+
   return PbrRenderContext(
     base=base,
     light_model=int(light_model),
     tone_mapper=int(tone_mapper),
     use_shadows=use_shadows,
     shadow_light_fraction=shadow_light_fraction,
-    geom_metallic=wp.array(metallic[None], dtype=float),
-    geom_roughness=wp.array(roughness[None], dtype=float),
-    geom_reflectance=wp.array(reflectance[None], dtype=float),
-    mat_reflectance=wp.array(np.asarray(mjm.mat_reflectance, dtype=np.float32).reshape(1, -1), dtype=float),
-    light_intensity=wp.array(light_intensity[None], dtype=float),
-    light_range=wp.array(np.asarray(mjm.light_range, dtype=np.float32)[None], dtype=float),
-    light_bulbradius=wp.array(np.asarray(mjm.light_bulbradius, dtype=np.float32)[None], dtype=float),
-    headlight_intensity=float(headlight_intensity),
-    exposure=wp.array([exposure], dtype=float),
-    ambient_radiance=wp.array([ambient], dtype=wp.vec3),
+    geom_metallic=per_world(metallic),
+    geom_roughness=per_world(roughness),
+    geom_reflectance=per_world(reflectance),
+    mat_reflectance=per_world(mjm.mat_reflectance),
+    light_intensity=per_world(lighting.light_intensity),
+    light_range=per_world(mjm.light_range),
+    light_bulbradius=per_world(mjm.light_bulbradius),
+    headlight_intensity=lighting.headlight_intensity,
+    exposure=wp.array([lighting.exposure], dtype=float),
+    ambient_radiance=wp.array([lighting.ambient], dtype=wp.vec3),
     dfg_lut=ibl.build_dfg_lut(),
     background_linear=wp.vec3(*background_linear),
     has_env=has_env,
-    env_background=bool(images) and envmap_background,
-    env_maps=env["maps"],
-    env_radiance=env["radiance"],
-    env_prefiltered=env["prefiltered"],
-    env_sh=env["sh"],
-    env_texel_angle=envmap_lib.texel_angle(env["width"]),
-    env_prob=env["prob"],
-    env_marginal=env["marginal"],
-    env_conditional=env["conditional"],
+    env_background=any_env and envmap_background,
+    env_maps=env.maps,
+    env_radiance=env.radiance,
+    env_prefiltered=env.prefiltered,
+    env_sh=env.sh,
+    env_texel_angle=envmap_lib.texel_angle(env.width),
+    env_prob=env.prob,
+    env_marginal=env.marginal,
+    env_conditional=env.conditional,
     env_id=wp.zeros(1, dtype=int),
     env_intensity=wp.array([envmap_intensity], dtype=float),
     env_yaw=wp.array([np.radians(envmap_rotation)], dtype=float),
@@ -451,30 +576,24 @@ def create_render_context(
     has_transparency=has_transparency,
     max_layers=max_layers,
     has_reflection=has_reflection,
-    unroll_lights=True,
     render_order=int(render_order),
     block_dim=block_dim,
     max_registers=max_registers,
     ordered_traversal=ordered_traversal,
-    max_unroll=6,
     tier=int(tier),
     path_samples=path_samples,
     max_depth=max_depth,
     rr_depth=rr_depth,
     denoise=denoise,
     denoise_iterations=denoise_iterations,
-    denoise_sigma_color=4.0,
-    denoise_sigma_normal=128.0,
-    denoise_sigma_depth=0.02,
-    denoise_sigma_albedo=0.05,
-    aov_albedo=wp.zeros((nworld, ri if denoise else 1), dtype=wp.vec3h),
-    aov_normal=wp.zeros((nworld, ri if denoise else 1), dtype=wp.vec3h),
-    aov_depth=wp.zeros((nworld, ri if denoise else 1), dtype=float),
-    aov_emission=wp.zeros((nworld, ri if denoise else 1), dtype=wp.vec3),
-    aov_variance=wp.zeros((nworld, ri if denoise else 1), dtype=float),
-    denoise_buffers=tuple(wp.zeros((nworld, ri if denoise else 1), dtype=wp.vec4) for _ in range(2)),
+    aov_albedo=wp.zeros((nworld, aov_pixels), dtype=wp.vec3h),
+    aov_normal=wp.zeros((nworld, aov_pixels), dtype=wp.vec3h),
+    aov_depth=wp.zeros((nworld, aov_pixels), dtype=float),
+    aov_emission=wp.zeros((nworld, aov_pixels), dtype=wp.vec3),
+    aov_variance=wp.zeros((nworld, aov_pixels), dtype=float),
+    denoise_buffers=(wp.zeros((nworld, aov_pixels), dtype=wp.vec4), wp.zeros((nworld, aov_pixels), dtype=wp.vec4)),
     render_hdr=render_hdr,
-    hdr_data=wp.zeros((nworld, ri if render_hdr or denoise else 1), dtype=wp.vec3),
+    hdr_data=wp.zeros((nworld, npixel if render_hdr or denoise else 1), dtype=wp.vec3),
     traversal=traversal,
-    **(frames or {}),
+    **frames,
   )

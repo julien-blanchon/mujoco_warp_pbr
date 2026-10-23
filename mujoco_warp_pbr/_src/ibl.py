@@ -81,7 +81,7 @@ def _dfg_lut(
   lut_out[j, i, 1] = y * inv_n
 
 
-def dfg_lut_array(size: int = DFG_LUT_SIZE, nsample: int = DFG_LUT_SAMPLES) -> wp.array3d[float]:
+def dfg_lut_array(size: int = DFG_LUT_SIZE, nsample: int = DFG_LUT_SAMPLES) -> wp.array:
   """Filament's multiscatter DFG table (size, size, 2) indexed [perceptual roughness, NoV].
 
   Channel x = ∫ V·Fc, channel y = ∫ V, so the specular albedo is mix(x, y, f0) and

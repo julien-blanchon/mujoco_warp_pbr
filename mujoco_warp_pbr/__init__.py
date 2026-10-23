@@ -15,6 +15,7 @@
 
 """Batched physically based renderer for MuJoCo Warp."""
 
+from mujoco_warp_pbr._src.envmap import load_hdr as load_hdr
 from mujoco_warp_pbr._src.io import create_render_context as create_render_context
 from mujoco_warp_pbr._src.output import get_depth as get_depth
 from mujoco_warp_pbr._src.output import get_hdr as get_hdr
@@ -27,3 +28,19 @@ from mujoco_warp_pbr._src.types import RenderOrder as RenderOrder
 from mujoco_warp_pbr._src.types import Tier as Tier
 from mujoco_warp_pbr._src.types import ToneMapper as ToneMapper
 from mujoco_warp_pbr._src.types import UnsetMaterial as UnsetMaterial
+
+__all__ = [
+  "LightModel",
+  "PbrRenderContext",
+  "RenderOrder",
+  "Tier",
+  "ToneMapper",
+  "UnsetMaterial",
+  "create_render_context",
+  "get_depth",
+  "get_hdr",
+  "get_rgb",
+  "get_segmentation",
+  "load_hdr",
+  "render",
+]
