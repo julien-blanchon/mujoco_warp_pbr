@@ -297,6 +297,9 @@ class _Views:
   no_rgb: wp.array1d[bool]
   ambient: wp.array1d[wp.vec3]
   no_ambient: wp.array1d[wp.vec3]
+  # The context's own (tuned or given) render order and block size.
+  render_order: int
+  block_dim: int | None
 
 
 @dataclasses.dataclass
@@ -575,6 +578,8 @@ class SensorCamera:
           no_rgb=wp.zeros(1, dtype=bool),
           ambient=rc.ambient_radiance,
           no_ambient=wp.zeros(1, dtype=wp.vec3),
+          render_order=rc.render_order,
+          block_dim=rc.block_dim,
         )
       scene.views[key] = views
     return views
@@ -594,10 +599,10 @@ class SensorCamera:
     rc.use_shadows = bool(options.get("use_shadows", config.enable_shadows))
     if "samples_per_pixel" not in options:
       rc.samples_per_pixel = max(1, math.ceil(math.sqrt(sample_count) - 1e-9))
-    if "render_order" not in options and int(config.render_order) in _RENDER_ORDERS:
-      rc.render_order = int(_RENDER_ORDERS[int(config.render_order)])
-    if "block_dim" not in options and int(config.block_dim) != _DEFAULT_CONFIG.block_dim:
-      rc.block_dim = int(config.block_dim)
+    order = _RENDER_ORDERS.get(int(config.render_order))
+    rc.render_order = views.render_order if order is None or "render_order" in options else int(order)
+    custom_block = int(config.block_dim) != _DEFAULT_CONFIG.block_dim and "block_dim" not in options
+    rc.block_dim = int(config.block_dim) if custom_block else views.block_dim
     rc.base.zfar = float(config.max_distance)
     rc.ambient_radiance = views.ambient if config.enable_ambient_lighting else views.no_ambient
     if not config.enable_global_world:
