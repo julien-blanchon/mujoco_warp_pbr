@@ -16,6 +16,14 @@ fields.
 - Every material, light and environment parameter can vary per world (domain randomisation)
   without recompiling. Depth and segmentation match MuJoCo Warp's renderer.
 
+## Install
+
+```bash
+pip install mujoco-warp-pbr          # Python >= 3.12; pulls mujoco, mujoco-warp and warp-lang
+pip install newton-pbr               # optional: the Newton camera sensor
+pip install "mujoco-warp-pbr[typing]"  # optional: shape-aware type stubs for Pyrefly
+```
+
 ## Usage
 
 ```python
@@ -87,7 +95,7 @@ unlit compositing (a warning is printed for both).
 
 ## Newton
 
-[`newton-pbr/`](newton-pbr/README.md) is a small package depending on this one and on
+[`newton-pbr/`](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/newton-pbr/README.md) is a small package depending on this one and on
 [Newton](https://github.com/newton-physics/newton). Its `newton_pbr.SensorPbrCamera` mirrors
 `newton.sensors.SensorCamera.update`, so any Newton scene renders with this renderer, batched over
 all worlds:
@@ -101,7 +109,7 @@ camera.update(state, camera_transforms, color_image=color, depth_image=depth)
 
 Camera-frames per second, 4096 worlds at 64², one camera per world, HDR environment and shadows
 for this renderer (RTX PRO 6000 Blackwell; from `benchmarks/suite.py`, full tables for three GPUs
-and all renderers in [`results/suite/suite-v2`](results/suite/suite-v2/README.md)):
+and all renderers in [`results/suite/suite-v2`](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/results/suite/suite-v2/README.md)):
 
 | scene | real-time | real-time (OptiX) | Newton `SensorCamera` | Newton RTX (tiled) | MuJoCo Warp |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -127,12 +135,12 @@ and all renderers in [`results/suite/suite-v2`](results/suite/suite-v2/README.md
   about 70k frames/s whatever the scene.
 - Throughput saturates from about 1–4 M pixels per launch (e.g. 256 worlds at 64²).
 
-![DamagedHelmet in every renderer](results/suite/suite-v2/rtx-pro-6000/gallery/damaged_helmet.png)
+![DamagedHelmet in every renderer](https://raw.githubusercontent.com/julien-blanchon/mujoco_warp_pbr/main/results/suite/suite-v2/rtx-pro-6000/gallery/damaged_helmet.png)
 
 Left to right: MuJoCo OpenGL, MuJoCo Warp, Newton `SensorCamera`, Newton `ViewerRTX`, this
 renderer's real-time tier, its path-traced tier (256 spp) and Mitsuba 3 (256 spp).
 
-See `results/scaling.md` and the milestone logs in [`results/history/`](results/history/README.md)
+See `results/scaling.md` and the milestone logs in [`results/history/`](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/results/history/README.md)
 (`m5_baseline.md`, `m7_autoresearch.md`) for more tables, `results/history/m6_pathtrace.md` for the
 path-traced tier and `results/rt_backend.md` for the OptiX backend.
 
@@ -186,7 +194,7 @@ DamagedHelmet at 64² renders at about 125–150 frames/s per core, scaling to 2
 faster than one 72-core Grace. A render context with an HDR environment takes about 2 s to
 create on the CPU device (the map's prefilter runs in row bands on up to 16 threads; it took
 about 32–35 s on one core). Full tables, the scaling curve and the baselines
-are in [`results/cpu.md`](results/cpu.md).
+are in [`results/cpu.md`](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/results/cpu.md).
 
 ## Benchmarks and validation
 
@@ -239,4 +247,4 @@ install needs neither Pyrefly nor the stubs. `uv sync --extra dev` is enough for
 benchmark-only packages (`bench` extra, OptiX, ovrtx, huggingface_hub) are listed in `ignore-missing-imports`, so
 their imports are untyped when absent and checked when installed.
 
-Design notes and literature: [`research/`](research/README.md).
+Design notes and literature: [`research/`](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/research/README.md).

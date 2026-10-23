@@ -1,7 +1,7 @@
 # newton-pbr
 
 Physically based camera sensor for [Newton](https://github.com/newton-physics/newton), rendered by
-[mujoco_warp_pbr](../README.md). Install it in a Newton project to render any Newton scene
+[mujoco_warp_pbr](https://github.com/julien-blanchon/mujoco_warp_pbr/blob/main/README.md). Install it in a Newton project to render any Newton scene
 (built in code, or imported from USD, URDF or MJCF) with PBR shading, image-based lighting and
 ray-traced shadows, batched over all worlds.
 
