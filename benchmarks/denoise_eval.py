@@ -17,30 +17,40 @@
 high-sample path-traced reference of the same scene.
 
   python benchmarks/denoise_eval.py --scene grid_env --samples 4 16 --set denoise_sigma_color=4.0
+
+--set KEY=VALUE applies to the denoised renders: a create_render_context keyword argument (e.g.
+denoise_iterations=3) or an attribute of the render context (e.g. denoise_sigma_color=4.0);
+unknown keys are an error. Values are parsed as in bench.py (JSON, else a string).
 """
 
 import argparse
+import inspect
 import json
 from pathlib import Path
+from typing import Any
 
+import _common
 import flip_evaluator
 import mujoco
 import mujoco_warp as mjw
 import numpy as np
 import warp as wp
 from PIL import Image
-from validate import VALIDATION
+from scenes import VALIDATION
 
 import mujoco_warp_pbr as mjpbr
 
+_CONTEXT_KWARGS = set(inspect.signature(mjpbr.create_render_context).parameters)
 
-def _render(mjm, env, res: int, samples: int, denoise: bool, overrides: dict, seed: int = 0) -> np.ndarray:
+
+def _render(mjm, env, res: int, samples: int, denoise: bool, overrides: dict[str, Any], seed: int = 0) -> np.ndarray:
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
   m = mjw.put_model(mjm)
   d = mjw.put_data(mjm, mjd)
   cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
-  kwargs = dict(envmap=env, envmap_intensity=1.0) if env is not None else {}
+  kwargs: dict[str, Any] = {"envmap": env, "envmap_intensity": 1.0} if env is not None else {}
+  kwargs |= {k: v for k, v in overrides.items() if k in _CONTEXT_KWARGS}
   rc = mjpbr.create_render_context(
     mjm,
     cam_res=(res, res),
@@ -53,7 +63,10 @@ def _render(mjm, env, res: int, samples: int, denoise: bool, overrides: dict, se
     **kwargs,
   )
   for key, value in overrides.items():
-    setattr(rc, key, value)
+    if key not in _CONTEXT_KWARGS:
+      if not hasattr(rc, key):
+        raise SystemExit(f"--set {key}: neither a create_render_context argument nor a render context attribute")
+      setattr(rc, key, value)
   mjw.refit_bvh(m, d, rc.base)
   mjpbr.render(m, d, rc, seed=seed)
   out = wp.zeros((1, res, res), dtype=wp.vec3)
@@ -67,10 +80,13 @@ def main():
   parser.add_argument("--res", type=int, default=256)
   parser.add_argument("--samples", type=int, nargs="*", default=[1, 4, 16])
   parser.add_argument("--reference-samples", type=int, default=4096)
-  parser.add_argument("--set", action="append", default=[], help="context attribute override KEY=VALUE")
+  parser.add_argument("--set", action="append", default=[], help="denoised-render option KEY=VALUE (see above)")
   parser.add_argument("--out", type=Path, default=None, help="directory for comparison sheets")
   args = parser.parse_args()
-  overrides = {k: float(v) if "." in v else int(v) for k, v in (s.split("=", 1) for s in args.set)}
+  try:
+    overrides = _common.parse_options(args.set)
+  except ValueError as e:
+    parser.error(str(e))
 
   for name in args.scene:
     make_model, make_env = VALIDATION[name]
@@ -88,7 +104,7 @@ def main():
       print(json.dumps(row))
       if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
-        sheet = np.concatenate(images + [ref], axis=1)
+        sheet = np.concatenate([*images, ref], axis=1)
         Image.fromarray((np.clip(sheet, 0, 1) * 255).astype(np.uint8)).save(args.out / f"{name}_{n}spp.png")
 
 

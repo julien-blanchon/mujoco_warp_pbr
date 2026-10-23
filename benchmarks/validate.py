@@ -31,129 +31,21 @@ Usage:
 
 import argparse
 import json
-import sys
 from pathlib import Path
+from typing import Any
 
+import _common
 import flip_evaluator
-import mitsuba as mi
 import mujoco
 import mujoco_warp as mjw
 import numpy as np
 import warp as wp
 from PIL import Image
+from references import mitsuba_scene
+from scenes import VALIDATION
+from scenes import tone_map
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import scenes  # noqa: E402
-from references import filament_bsdf  # noqa: E402
-from references import mitsuba_scene  # noqa: E402
-
-import mujoco_warp_pbr as mjpbr  # noqa: E402
-from mujoco_warp_pbr._src import envmap as envmap_lib  # noqa: E402
-from mujoco_warp_pbr._src import ibl  # noqa: E402
-
-
-def _grid(light: str, floor: bool = False) -> mujoco.MjModel:
-  n = 5
-  mats, geoms = [], []
-  for i in range(n):
-    for j in range(n):
-      mats.append(f'<material name="m{i}{j}" rgba="0.95 0.64 0.54 1" metallic="{i / (n - 1)}" roughness="{j / (n - 1)}"/>')
-      geoms.append(f'<geom type="sphere" size="0.09" pos="{(j - 2) * 0.22:.2f} 0 {(i - 2) * 0.22:.2f}" material="m{i}{j}"/>')
-  floor_geom = '<geom type="plane" pos="0 0 -0.6" size="3 3 0.1" rgba="0.5 0.5 0.5 1"/>' if floor else ""
-  return mujoco.MjModel.from_xml_string(f"""
-    <mujoco>
-      <visual><headlight active="0"/></visual>
-      <asset>{"".join(mats)}</asset>
-      <worldbody>{light}{floor_geom}{"".join(geoms)}
-        <camera name="cam" pos="0 -2.6 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
-      </worldbody>
-    </mujoco>""")
-
-
-def _furnace() -> mujoco.MjModel:
-  return mujoco.MjModel.from_xml_string("""
-    <mujoco>
-      <visual><headlight active="0"/></visual>
-      <asset>
-        <material name="a" rgba="1 1 1 1" metallic="1" roughness="0.6"/>
-        <material name="b" rgba="1 1 1 1" metallic="0" roughness="0.6"/>
-      </asset>
-      <worldbody>
-        <geom type="sphere" pos="-0.3 0 0" size="0.25" material="a"/>
-        <geom type="sphere" pos="0.3 0 0" size="0.25" material="b"/>
-        <camera name="cam" pos="0 -2 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
-      </worldbody>
-    </mujoco>""")
-
-
-def _khronos(model: str) -> mujoco.MjModel:
-  spec = mujoco.MjSpec.from_file(str(scenes.asset_dir() / "mjcf" / model / f"{model}.xml"))
-  spec.visual.headlight.active = 0
-  spec.worldbody.add_camera(name="cam", pos=[0, -1.7, 0.5], xyaxes=[1, 0, 0, 0, 0, 1], fovy=40)
-  return spec.compile()
-
-
-def _hdri(name: str) -> np.ndarray:
-  return envmap_lib.load_hdr(scenes.asset_dir() / "hdri" / f"{name}_1k.hdr")
-
-
-def _tubes(light: str) -> mujoco.MjModel:
-  """Capsules and cylinders on a floor (no environment). The spot variant differs from Mitsuba in
-  the cone falloff (ours: Filament's smooth cone, Mitsuba's: linear in angle)."""
-  return mujoco.MjModel.from_xml_string(f"""
-    <mujoco>
-      <visual><headlight active="0"/></visual>
-      <asset>
-        <material name="red" rgba="0.8 0.2 0.15 1" roughness="0.4"/>
-        <material name="metal" rgba="0.9 0.9 0.9 1" metallic="1" roughness="0.3"/>
-        <material name="floor" rgba="0.6 0.6 0.6 1" roughness="0.8"/>
-      </asset>
-      <worldbody>
-        {light}
-        <geom type="plane" size="3 3 0.1" material="floor"/>
-        <geom type="capsule" size="0.12 0.25" pos="-0.35 0 0.37" material="red"/>
-        <geom type="capsule" size="0.08 0.3" pos="0.05 0.2 0.1" euler="90 0 30" material="metal"/>
-        <geom type="cylinder" size="0.15 0.2" pos="0.4 0.05 0.2" material="red"/>
-        <geom type="cylinder" size="0.1 0.15" pos="0.05 -0.3 0.35" euler="0 70 0" material="metal"/>
-        <camera name="cam" pos="0 -2.2 1.2" xyaxes="1 0 0 0 0.5 0.866" fovy="35"/>
-      </worldbody>
-    </mujoco>""")
-
-
-# name -> (model factory, envmap factory or None)
-VALIDATION = {
-  "grid_env": (lambda: _grid(""), lambda: _hdri("studio_small_09")),
-  "grid_sun": (lambda: _grid('<light type="directional" dir="0.3 0.6 -0.5" intensity="3" castshadow="false"/>'), None),
-  "grid_point": (lambda: _grid('<light type="point" pos="0.5 -1.5 0.8" intensity="4" range="1000" castshadow="false"/>'), None),
-  "furnace": (_furnace, lambda: np.ones((64, 128, 3), np.float32)),
-  "damaged_helmet": (lambda: _khronos("DamagedHelmet"), lambda: _hdri("kloofendal_48d_partly_cloudy_puresky")),
-  "water_bottle": (lambda: _khronos("WaterBottle"), lambda: _hdri("venice_sunset")),
-  "normal_tangent": (lambda: _khronos("NormalTangentMirrorTest"), lambda: _hdri("studio_small_09")),
-  "tubes_point": (lambda: _tubes('<light type="point" pos="0.4 -0.6 1.6" intensity="3" range="1000" bulbradius="0"/>'), None),
-  "tubes_spot": (
-    lambda: _tubes(
-      '<light type="spot" pos="0.4 -0.6 1.6" dir="-0.2 0.35 -1" intensity="6" range="1000" cutoff="35" bulbradius="0"/>'
-    ),
-    None,
-  ),
-}
-
-
-def tone_map(hdr: np.ndarray, exposure: float) -> np.ndarray:
-  """numpy twin of the renderer's display path: exposure, PBR Neutral, sRGB."""
-  c = np.maximum(hdr * exposure, 0.0)
-  x = c.min(axis=-1, keepdims=True)
-  offset = np.where(x < 0.08, x - 6.25 * x * x, 0.04)
-  c = c - offset
-  peak = c.max(axis=-1, keepdims=True)
-  start, desat = 0.76, 0.15
-  d = 1.0 - start
-  new_peak = 1.0 - d * d / (peak + d - start)
-  compressed = c * (new_peak / np.maximum(peak, 1e-9))
-  g = 1.0 - 1.0 / (desat * (peak - new_peak) + 1.0)
-  compressed = compressed * (1 - g) + new_peak * g
-  c = np.clip(np.where(peak < start, c, compressed), 0.0, 1.0)
-  return np.where(c <= 0.0031308, 12.92 * c, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+import mujoco_warp_pbr as mjpbr
 
 
 def render_ours(
@@ -164,7 +56,7 @@ def render_ours(
   m = mjw.put_model(mjm)
   d = mjw.put_data(mjm, mjd)
   cam = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, "cam")
-  kwargs = dict(envmap=env, envmap_intensity=1.0) if env is not None else {}
+  kwargs: dict[str, Any] = {"envmap": env, "envmap_intensity": 1.0} if env is not None else {}
   # Validation scenes are authored in display-relative radiance: expose at 1.
   rc = mjpbr.create_render_context(
     mjm,
@@ -200,8 +92,7 @@ def main():
   parser.add_argument("--out", type=Path, default=Path("results/validation"))
   args = parser.parse_args()
 
-  mi.set_variant("cuda_ad_rgb")
-  filament_bsdf.register(ibl.dfg_lut_array().numpy())
+  _common.setup_mitsuba("cuda_ad_rgb")
   args.out.mkdir(parents=True, exist_ok=True)
   rows = []
   for name in args.scene:

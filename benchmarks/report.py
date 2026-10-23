@@ -41,7 +41,6 @@ CONTEXT_NAMES = {
   "batch_64": "Batch: 4096 worlds, 64²",
   "batch_128": "Batch: 1024 worlds, 128²",
 }
-SEQUENTIAL = {"mujoco", "mitsuba", "newton_rtx"}
 
 
 def _fps(value: float) -> str:
@@ -70,13 +69,19 @@ def _gpu(system: dict, run: Path) -> str:
 
 
 def _table(results: dict, context: str) -> list[str]:
-  scenes = sorted({k[0] for k in results if k[1] == context}, key=lambda s: list(dict.fromkeys(k[0] for k in results)).index(s))
+  """One context's table: a row per scene (first-measured order), a column per renderer."""
+  in_context = {k[0] for k in results if k[1] == context}
+  scenes = [s for s in dict.fromkeys(k[0] for k in results) if s in in_context]
   renderers = [r for r in RENDERER_NAMES if any(k[2] == r and k[1] == context for k in results)]
   if not scenes:
     return []
   lines = ["| scene | " + " | ".join(RENDERER_NAMES[r] for r in renderers) + " |"]
   lines.append("| --- |" + " ---: |" * len(renderers))
   for scene in scenes:
+    # Best over every renderer measured on this scene and context (also those not in the table).
+    best = max(
+      (e["row"]["frames_per_s"] for (s, c, _), e in results.items() if s == scene and c == context and e["ok"]), default=0
+    )
     cells = []
     for r in renderers:
       entry = results.get((scene, context, r))
@@ -86,10 +91,6 @@ def _table(results: dict, context: str) -> list[str]:
         cells.append("n/a")
       else:
         cell = _fps(entry["row"]["frames_per_s"])
-        best = max(
-          (e["row"]["frames_per_s"] for (s, c, _), e in results.items() if s == scene and c == context and e["ok"]),
-          default=0,
-        )
         cells.append(f"**{cell}**" if entry["row"]["frames_per_s"] == best else cell)
     lines.append(f"| {scene} | " + " | ".join(cells) + " |")
   return lines
